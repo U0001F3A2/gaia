@@ -1,0 +1,16 @@
+syntax = "proto3";
+package gaia.nonce.v1;
+
+option go_package = "github.com/cosmos/gaia/x/nonce/types";
+
+import "gogoproto/gogo.proto";
+import "amino/amino.proto";
+import "gaia/nonce/v1/nonce.proto";
+
+// GenesisState defines the x/nonce module's genesis state.
+message GenesisState {
+  Params params = 1
+      [ (gogoproto.nullable) = false, (amino.dont_omitempty) = true ];
+
+  repeated NonceEntry nonce_entries = 2 [ (gogoproto.nullable) = false ];
+}

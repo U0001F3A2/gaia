@@ -1,0 +1,31 @@
+syntax = "proto3";
+package gaia.nonce.v1;
+
+option go_package = "github.com/cosmos/gaia/x/nonce/types";
+
+import "gogoproto/gogo.proto";
+import "amino/amino.proto";
+
+// Params defines the parameters for the x/nonce module.
+message Params {
+  option (amino.name) = "gaia/x/nonce/Params";
+  option (gogoproto.equal) = true;
+
+  // past_window_us is how far in the past (microseconds) a timestamp nonce can be
+  // relative to block time. Default: 300000000 (5 minutes).
+  uint64 past_window_us = 1;
+
+  // future_window_us is how far in the future (microseconds) a timestamp nonce can be
+  // relative to block time. Default: 300000000 (5 minutes).
+  uint64 future_window_us = 2;
+
+  // timestamp_nonce_cutoff is the sequence value threshold. Values >= this are
+  // treated as timestamp nonces (microseconds). Default: 2^40.
+  uint64 timestamp_nonce_cutoff = 3;
+}
+
+// NonceEntry represents a consumed timestamp nonce for genesis export/import.
+message NonceEntry {
+  uint64 timestamp_us = 1;
+  string address = 2;
+}
