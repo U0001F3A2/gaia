@@ -1,10 +1,18 @@
-// Package ante provides forked ante decorators for the x/nonce module.
+// Forked from cosmos-sdk v0.53.4 x/auth/ante/sigverify.go
+// SigVerificationDecorator struct (lines 234-239) and AnteHandle (lines 306-415).
 //
-// SigVerificationDecorator is forked from cosmos-sdk/x/auth/ante/sigverify.go
-// (SDK v0.53.4). The only change is in the sequence check block: sequences >= the
-// timestamp nonce cutoff are routed to x/nonce's ValidateAndConsumeTimestampNonce
-// instead of the standard sequential check. Everything else (pubkey, signature
-// verification, gas, unordered tx handling) is identical to the SDK original.
+// Changes from SDK original:
+//   - Struct: added NonceKeeper field; dropped unordered tx config fields.
+//   - AnteHandle lines 362-369 (sequence check): replaced with threshold-based
+//     routing. Sequences >= TimestampNonceCutoff go through x/nonce keeper;
+//     sequences below use the standard acc.GetSequence() check.
+//   - After the signer loop: timestamp signer set passed via context to
+//     IncrementSequenceDecorator.
+//   - verifyUnorderedNonce (lines 425-488): stubbed out; gaia does not enable
+//     unordered txs.
+//
+// Everything else (pubkey retrieval, signature verification, signer data
+// construction, unordered tx guard) is identical to the SDK original.
 package ante
 
 import (
@@ -25,14 +33,11 @@ import (
 	"github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
-// NonceKeeper defines the interface for the nonce keeper needed by ante decorators.
 type NonceKeeper interface {
 	GetParams(ctx sdk.Context) (types.Params, error)
 	ValidateAndConsumeTimestampNonce(ctx sdk.Context, addr []byte, nonceUs uint64) error
 }
 
-// SigVerificationDecorator verifies all signatures for a tx.
-// Forked from SDK to add timestamp nonce routing in the sequence check.
 type SigVerificationDecorator struct {
 	ak              authante.AccountKeeper
 	signModeHandler *txsigning.HandlerMap
@@ -57,7 +62,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 		return ctx, errorsmod.Wrap(sdkerrors.ErrTxDecode, "invalid transaction type")
 	}
 
-	// --- Unordered tx handling (identical to SDK) ---
 	utx, ok := tx.(sdk.TxWithUnordered)
 	isUnordered := ok && utx.GetUnordered()
 	unorderedEnabled := svd.ak.UnorderedTransactionsEnabled()
@@ -86,7 +90,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 		}
 	}
 
-	// --- Nonce keeper params (only fetched if needed) ---
 	var nonceParams *types.Params
 	getNonceParams := func() (types.Params, error) {
 		if nonceParams != nil {
@@ -100,7 +103,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 		return p, nil
 	}
 
-	// Track timestamp nonce signers for IncrementSequenceDecorator
 	timestampSigners := make(TimestampSignerSet)
 	var sharedTimestampNonce *uint64
 
@@ -118,7 +120,7 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 			return ctx, errorsmod.Wrap(sdkerrors.ErrInvalidPubKey, "pubkey on account is not set")
 		}
 
-		// --- BEGIN FORKED SECTION: sequence check with timestamp nonce routing ---
+		// --- BEGIN FORKED: replaces SDK sequence check (lines 362-369) ---
 		if !isUnordered {
 			params, err := getNonceParams()
 			if err != nil {
@@ -126,12 +128,10 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 			}
 
 			if sig.Sequence >= params.TimestampNonceCutoff {
-				// Timestamp nonce path: validate + consume via x/nonce keeper.
 				if err := svd.nk.ValidateAndConsumeTimestampNonce(ctx, signers[i], sig.Sequence); err != nil {
 					return ctx, err
 				}
 
-				// Multi-sig enforcement: all timestamp signers must use the same value.
 				if sharedTimestampNonce == nil {
 					seq := sig.Sequence
 					sharedTimestampNonce = &seq
@@ -141,7 +141,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 
 				timestampSigners[string(signers[i])] = true
 			} else {
-				// Standard sequential check (identical to SDK).
 				if sig.Sequence != acc.GetSequence() {
 					return ctx, errorsmod.Wrapf(
 						sdkerrors.ErrWrongSequence,
@@ -150,9 +149,8 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 				}
 			}
 		}
-		// --- END FORKED SECTION ---
+		// --- END FORKED ---
 
-		// Signature verification (identical to SDK)
 		genesis := ctx.BlockHeight() == 0
 		chainID := ctx.ChainID()
 		var accNum uint64
@@ -191,7 +189,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 		}
 	}
 
-	// Pass timestamp signers to IncrementSequenceDecorator via context
 	if len(timestampSigners) > 0 {
 		ctx = WithTimestampSigners(ctx, timestampSigners)
 	}
@@ -199,19 +196,7 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 	return next(ctx, tx, simulate)
 }
 
-// verifyUnorderedNonce is delegated to the SDK's original implementation.
-// We call into the account keeper's TryAddUnorderedNonce (SDK's ADR-070 path).
-func (svd SigVerificationDecorator) verifyUnorderedNonce(ctx sdk.Context, unorderedTx sdk.TxWithUnordered) error {
-	// Delegate to SDK's built-in unordered nonce verification.
-	// We construct a temporary SDK SigVerificationDecorator just for this method.
-	sdkSvd := authante.NewSigVerificationDecorator(svd.ak, svd.signModeHandler)
-	// The SDK's AnteHandle for unordered txs calls verifyUnorderedNonce internally,
-	// but since it's not exported, we use a different approach:
-	// We let the AnteHandle run but only for unordered txs, catching its chain call.
-	// However, this is complex. Instead, since unordered tx support is an SDK feature
-	// orthogonal to our timestamp nonce feature, and gaia doesn't enable unordered txs
-	// (no WithUnorderedTransactions init), we simply return an error for now.
-	_ = sdkSvd
+func (svd SigVerificationDecorator) verifyUnorderedNonce(_ sdk.Context, _ sdk.TxWithUnordered) error {
 	return errorsmod.Wrap(sdkerrors.ErrNotSupported, "unordered transactions are not supported with x/nonce ante handler")
 }
 
