@@ -1,6 +1,7 @@
 package keeper
 
 import (
+	"bytes"
 	"context"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -56,22 +57,10 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 			break
 		}
 		tsUs, keyAddr := types.ParseNonceKey(key)
-		if len(keyAddr) == len(addrBytes) && bytesEqual(keyAddr, addrBytes) {
+		if bytes.Equal(keyAddr, addrBytes) {
 			nonces = append(nonces, tsUs)
 		}
 	}
 
 	return &types.QueryNoncesByAddressResponse{TimestampNonces: nonces}, nil
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
