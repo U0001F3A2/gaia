@@ -202,3 +202,184 @@ func (s *KeeperTestSuite) TestHasNonceQuery() {
 	s.NoError(err)
 	s.True(has)
 }
+
+// --- GRPC Query Tests ---
+
+func (s *KeeperTestSuite) TestGRPCQueryParams() {
+	q := keeper.Querier{Keeper: s.keeper}
+	resp, err := q.Params(s.ctx, &types.QueryParamsRequest{})
+	s.NoError(err)
+	s.Equal(types.DefaultParams(), resp.Params)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryHasNonce() {
+	q := keeper.Querier{Keeper: s.keeper}
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Not consumed yet
+	resp, err := q.HasNonce(s.ctx, &types.QueryHasNonceRequest{
+		Address:     addr.String(),
+		TimestampUs: blockTimeUs,
+	})
+	s.NoError(err)
+	s.False(resp.HasNonce)
+
+	// Consume and re-query
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+	resp, err = q.HasNonce(s.ctx, &types.QueryHasNonceRequest{
+		Address:     addr.String(),
+		TimestampUs: blockTimeUs,
+	})
+	s.NoError(err)
+	s.True(resp.HasNonce)
+
+	// Invalid bech32 address
+	_, err = q.HasNonce(s.ctx, &types.QueryHasNonceRequest{
+		Address:     "invalid",
+		TimestampUs: blockTimeUs,
+	})
+	s.Error(err)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress() {
+	q := keeper.Querier{Keeper: s.keeper}
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr0 := s.addrs[0]
+	addr1 := s.addrs[1]
+
+	// Set nonces for addr0
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, blockTimeUs))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, blockTimeUs+1000))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, blockTimeUs+2000))
+
+	// Set nonces for addr1 (should not appear in addr0 query)
+	s.NoError(s.keeper.SetNonce(s.ctx, addr1, blockTimeUs+500))
+
+	resp, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: addr0.String(),
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 3)
+	s.Contains(resp.TimestampNonces, blockTimeUs)
+	s.Contains(resp.TimestampNonces, blockTimeUs+1000)
+	s.Contains(resp.TimestampNonces, blockTimeUs+2000)
+
+	// addr1 should only have 1
+	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: addr1.String(),
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 1)
+	s.Equal(blockTimeUs+500, resp.TimestampNonces[0])
+
+	// addr with no nonces
+	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: s.addrs[2].String(),
+	})
+	s.NoError(err)
+	s.Empty(resp.TimestampNonces)
+}
+
+// --- Key Encoding Tests ---
+
+func (s *KeeperTestSuite) TestKeyEncodingRoundTrip() {
+	addr := s.addrs[0]
+	ts := uint64(1738780800000000)
+
+	key := types.BuildNonceKey(ts, addr)
+	gotTs, gotAddr := types.ParseNonceKey(key)
+	s.Equal(ts, gotTs)
+	s.Equal([]byte(addr), gotAddr)
+}
+
+func (s *KeeperTestSuite) TestKeyOrderingIsTimestampFirst() {
+	addr := s.addrs[0]
+	key1 := types.BuildNonceKey(100, addr)
+	key2 := types.BuildNonceKey(200, addr)
+	key3 := types.BuildNonceKey(200, s.addrs[1])
+
+	// key1 < key2 (earlier timestamp sorts first)
+	s.True(string(key1) < string(key2))
+	// key2 and key3 share timestamp prefix, differ by address
+	s.Equal(key2[:9], key3[:9])
+}
+
+// --- Prune Edge Cases ---
+
+func (s *KeeperTestSuite) TestPruneMultipleAddresses() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr0 := s.addrs[0]
+	addr1 := s.addrs[1]
+
+	expired := blockTimeUs - types.DefaultPastWindowUs - 1_000_000
+	valid := blockTimeUs
+
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, expired))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr1, expired))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, valid))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr1, valid))
+
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+
+	// Expired nonces pruned for both addresses
+	has, _ := s.keeper.HasNonce(s.ctx, addr0, expired)
+	s.False(has)
+	has, _ = s.keeper.HasNonce(s.ctx, addr1, expired)
+	s.False(has)
+
+	// Valid nonces remain for both
+	has, _ = s.keeper.HasNonce(s.ctx, addr0, valid)
+	s.True(has)
+	has, _ = s.keeper.HasNonce(s.ctx, addr1, valid)
+	s.True(has)
+}
+
+func (s *KeeperTestSuite) TestPruneEarlyChainUnderflow() {
+	// Simulate early chain: block time < past window
+	earlyCtx := s.ctx.WithBlockTime(time.Unix(60, 0)) // 60 seconds after epoch
+	s.NoError(s.keeper.SetParams(earlyCtx, types.DefaultParams()))
+
+	addr := s.addrs[0]
+	ts := uint64(earlyCtx.BlockTime().UnixMicro())
+	s.NoError(s.keeper.SetNonce(earlyCtx, addr, ts))
+
+	// Should not panic or error on underflow
+	s.NoError(s.keeper.PruneExpiredNonces(earlyCtx))
+
+	// Nonce should still exist (nothing is expired when cutoff = 0)
+	has, _ := s.keeper.HasNonce(earlyCtx, addr, ts)
+	s.True(has)
+}
+
+// --- ValidateGenesis Tests ---
+
+func (s *KeeperTestSuite) TestValidateGenesis() {
+	// Valid
+	gs := types.DefaultGenesisState()
+	s.NoError(types.ValidateGenesis(gs))
+
+	// Duplicate entry
+	gs.NonceEntries = []types.NonceEntry{
+		{TimestampUs: 100, Address: "cosmos1abc"},
+		{TimestampUs: 100, Address: "cosmos1abc"},
+	}
+	s.Error(types.ValidateGenesis(gs))
+
+	// Empty address
+	gs.NonceEntries = []types.NonceEntry{
+		{TimestampUs: 100, Address: ""},
+	}
+	s.Error(types.ValidateGenesis(gs))
+
+	// Zero timestamp
+	gs.NonceEntries = []types.NonceEntry{
+		{TimestampUs: 0, Address: "cosmos1abc"},
+	}
+	s.Error(types.ValidateGenesis(gs))
+
+	// Invalid params
+	gs = types.DefaultGenesisState()
+	gs.Params.TimestampNonceCutoff = 0
+	s.Error(types.ValidateGenesis(gs))
+}
