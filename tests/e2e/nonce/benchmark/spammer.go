@@ -21,9 +21,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,17 +55,17 @@ import (
 // ---------------------------------------------------------------------------
 
 type Config struct {
-	Mode        string `json:"mode"`
-	TotalTxs    int    `json:"total_txs"`
-	Concurrency int    `json:"concurrency"`
-	ChainID     string `json:"chain_id"`
-	GRPCAddr    string `json:"grpc_addr"`
-	WSAddr      string `json:"ws_addr"`
-	AcctNumber  uint64 `json:"acct_number"`
-	StartSeq    uint64 `json:"start_seq"`
-	Denom       string `json:"denom"`
-	Amount      int64  `json:"amount"`
-	Recipient   string `json:"recipient"`
+	Mode          string   `json:"mode"`
+	TotalTxs      int      `json:"total_txs"`
+	Concurrency   int      `json:"concurrency"`
+	ChainID       string   `json:"chain_id"`
+	GRPCEndpoints []string `json:"grpc_endpoints"`
+	WSAddr        string   `json:"ws_addr"`
+	AcctNumber    uint64   `json:"acct_number"`
+	StartSeq      uint64   `json:"start_seq"`
+	Denom         string   `json:"denom"`
+	Amount        int64    `json:"amount"`
+	Recipient     string   `json:"recipient"`
 }
 
 type TxResult struct {
@@ -83,9 +87,8 @@ type LatencyStats struct {
 }
 
 type BlockStat struct {
-	Height    int64   `json:"height"`
-	TxCount   int     `json:"tx_count"`
-	BlockTime float64 `json:"block_time_ms"`
+	Height  int64 `json:"height"`
+	TxCount int   `json:"tx_count"`
 }
 
 type Summary struct {
@@ -98,6 +101,8 @@ type Summary struct {
 	BroadcastLatency  LatencyStats `json:"broadcast_latency"`
 	InclusionLatency  LatencyStats `json:"inclusion_latency"`
 	DurationMs        int64        `json:"duration_ms"`
+	TotalDurationMs   int64        `json:"total_duration_ms"`
+	StartedAt         string       `json:"started_at"`
 	BlockStats        []BlockStat  `json:"block_stats"`
 }
 
@@ -128,6 +133,7 @@ type txTracker struct {
 	pending  map[string]time.Time  // tx_hash -> broadcast time
 	included map[string]txConfirm  // tx_hash -> confirmation info
 	done     chan struct{}
+
 }
 
 type txConfirm struct {
@@ -220,12 +226,18 @@ func (t *txTracker) subscribe(ctx context.Context, wsURL string) error {
 }
 
 // processWSMessage extracts tx hash and height from CometBFT event JSON.
-// CometBFT Tx event structure (v0.38):
+// CometBFT v0.38 Tx event structure (nested, not flat):
 //
 //	{
 //	  "result": {
-//	    "events": { "tx.hash": ["AABB..."], "tx.height": ["123"] },
-//	    ...
+//	    "data": {
+//	      "value": {
+//	        "TxResult": {
+//	          "height": "123",
+//	          "tx": "<base64-encoded-tx-bytes>"
+//	        }
+//	      }
+//	    }
 //	  }
 //	}
 func (t *txTracker) processWSMessage(msg []byte, now time.Time) {
@@ -245,11 +257,13 @@ func (t *txTracker) processWSMessage(msg []byte, now time.Time) {
 	}
 
 	if err := json.Unmarshal(msg, &envelope); err != nil {
+		log("ws: json unmarshal error: %v (msg prefix: %.100s)", err, string(msg))
 		return
 	}
 
 	txB64 := envelope.Result.Data.Value.TxResult.Tx
 	if txB64 == "" {
+		// Not a Tx event (e.g. NewBlock subscription or subscribe ack)
 		return
 	}
 
@@ -257,6 +271,7 @@ func (t *txTracker) processWSMessage(msg []byte, now time.Time) {
 
 	txBz, err := base64.StdEncoding.DecodeString(txB64)
 	if err != nil {
+		log("ws: base64 decode error: %v", err)
 		return
 	}
 
@@ -284,7 +299,13 @@ func computeLatencyStats(nanos []int64) LatencyStats {
 	}
 	sort.Slice(nanos, func(i, j int) bool { return nanos[i] < nanos[j] })
 	pct := func(p float64) float64 {
-		idx := int(float64(len(nanos)-1) * p)
+		idx := int(math.Ceil(float64(len(nanos))*p)) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(nanos) {
+			idx = len(nanos) - 1
+		}
 		return float64(nanos[idx]) / 1e6 // ns -> ms
 	}
 	return LatencyStats{
@@ -313,17 +334,115 @@ func categorizeError(errStr string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Block scanner: queries blocks via RPC to find confirmed tx hashes.
+// More reliable than WebSocket which drops events under load.
+// ---------------------------------------------------------------------------
+
+// scanBlocks queries blocks from startHeight to the current height via the
+// CometBFT RPC endpoint and records which of the pending tx hashes appear.
+func (t *txTracker) scanBlocks(rpcURL string, startHeight int64) {
+	// Get current height
+	currentHeight := getBlockHeight(rpcURL)
+	if currentHeight <= startHeight {
+		return
+	}
+
+	now := time.Now()
+	matched := 0
+
+	for h := startHeight; h <= currentHeight; h++ {
+		hashes := getBlockTxHashes(rpcURL, h)
+		for _, hash := range hashes {
+			t.mu.Lock()
+			if _, tracked := t.pending[hash]; tracked {
+				if _, already := t.included[hash]; !already {
+					t.included[hash] = txConfirm{height: h, timestamp: now}
+					matched++
+				}
+			}
+			t.mu.Unlock()
+		}
+	}
+
+	log("Block scan: %d blocks (%d->%d), found %d txs",
+		currentHeight-startHeight+1, startHeight, currentHeight, matched)
+}
+
+// rpcGet fetches a CometBFT RPC endpoint and unmarshals the JSON response.
+func rpcGet(url string, dest any) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, dest)
+}
+
+func getBlockHeight(rpcURL string) int64 {
+	var status struct {
+		Result struct {
+			SyncInfo struct {
+				LatestBlockHeight string `json:"latest_block_height"`
+			} `json:"sync_info"`
+		} `json:"result"`
+	}
+	if err := rpcGet(rpcURL+"/status", &status); err != nil {
+		return 0
+	}
+	h, _ := strconv.ParseInt(status.Result.SyncInfo.LatestBlockHeight, 10, 64)
+	return h
+}
+
+func getBlockTxHashes(rpcURL string, height int64) []string {
+	var block struct {
+		Result struct {
+			Block struct {
+				Data struct {
+					Txs []string `json:"txs"` // base64-encoded tx bytes
+				} `json:"data"`
+			} `json:"block"`
+		} `json:"result"`
+	}
+	if err := rpcGet(fmt.Sprintf("%s/block?height=%d", rpcURL, height), &block); err != nil {
+		return nil
+	}
+
+	var hashes []string
+	for _, txB64 := range block.Result.Block.Data.Txs {
+		txBz, err := base64.StdEncoding.DecodeString(txB64)
+		if err != nil {
+			continue
+		}
+		h := sha256.Sum256(txBz)
+		hashes = append(hashes, strings.ToUpper(hex.EncodeToString(h[:])))
+	}
+	return hashes
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
+// acctInfo holds per-account state for tx signing.
+type acctInfo struct {
+	name    string
+	addr    sdk.AccAddress
+	number  uint64
+	nextSeq uint64
+}
+
 func main() {
 	var (
-		mode        = flag.String("mode", "timestamp", "tx mode: sequential, timestamp, mixed")
+		mode        = flag.String("mode", "timestamp", "tx mode: sequential, timestamp, baseline")
 		totalTxs    = flag.Int("total", 100, "total transactions to send")
 		concurrency = flag.Int("concurrency", 10, "concurrent broadcast goroutines")
 		chainID     = flag.String("chain-id", "nonce-test", "chain ID")
-		grpcAddr    = flag.String("grpc", "localhost:9090", "gRPC endpoint")
-		wsAddr      = flag.String("ws", "", "WebSocket endpoint (default: derived from grpc host)")
+		grpcAddrs   = flag.String("grpc", "localhost:9090", "gRPC endpoint(s), comma-separated for multi-node")
+		wsAddr      = flag.String("ws", "", "WebSocket endpoint (default: derived from first grpc host)")
 		acctNumber  = flag.Uint64("account-number", 0, "account number")
 		startSeq    = flag.Uint64("start-seq", 0, "starting sequence for sequential mode")
 		denom       = flag.String("denom", "stake", "coin denom")
@@ -331,29 +450,38 @@ func main() {
 		recipient   = flag.String("recipient", "", "recipient address (default: self-send)")
 		keyHome     = flag.String("key-home", "/root/.gaia", "keyring home directory")
 		keyName     = flag.String("key-name", "validator", "keyring key name")
-		emitTxs     = flag.Bool("emit-txs", false, "include per-tx results in output")
-		waitBlocks  = flag.Int("wait-blocks", 10, "max blocks to wait for inclusion after broadcast")
+		keyPrefix   = flag.String("key-prefix", "bench", "key name prefix for baseline (multi-account) mode")
+		numAccounts = flag.Int("num-accounts", 0, "number of accounts for baseline mode")
+		emitTxs       = flag.Bool("emit-txs", false, "include per-tx results in output")
+		waitBlocks    = flag.Int("wait-blocks", 10, "max blocks to wait for inclusion after broadcast")
+		broadcastMode = flag.String("broadcast-mode", "sync", "broadcast mode: sync (wait for CheckTx) or async (fire-and-forget)")
 	)
 	flag.Parse()
 
-	// Derive WS address from gRPC host if not specified
+	// Parse comma-separated gRPC endpoints
+	endpoints := strings.Split(*grpcAddrs, ",")
+	for i := range endpoints {
+		endpoints[i] = strings.TrimSpace(endpoints[i])
+	}
+
+	// Derive WS address from first gRPC host if not specified
 	if *wsAddr == "" {
-		host := strings.Split(*grpcAddr, ":")[0]
+		host := strings.Split(endpoints[0], ":")[0]
 		*wsAddr = "ws://" + host + ":26657"
 	}
 
 	cfg := Config{
-		Mode:        *mode,
-		TotalTxs:    *totalTxs,
-		Concurrency: *concurrency,
-		ChainID:     *chainID,
-		GRPCAddr:    *grpcAddr,
-		WSAddr:      *wsAddr,
-		AcctNumber:  *acctNumber,
-		StartSeq:    *startSeq,
-		Denom:       *denom,
-		Amount:      *amount,
-		Recipient:   *recipient,
+		Mode:          *mode,
+		TotalTxs:      *totalTxs,
+		Concurrency:   *concurrency,
+		ChainID:       *chainID,
+		GRPCEndpoints: endpoints,
+		WSAddr:        *wsAddr,
+		AcctNumber:    *acctNumber,
+		StartSeq:      *startSeq,
+		Denom:         *denom,
+		Amount:        *amount,
+		Recipient:     *recipient,
 	}
 
 	// ---- Codec + tx config ----
@@ -371,35 +499,119 @@ func main() {
 		os.Exit(1)
 	}
 
-	rec, err := kr.Key(*keyName)
-	if err != nil {
-		log("key %q not found: %v", *keyName, err)
-		os.Exit(1)
+	// ---- gRPC connection pool ----
+	var grpcConns []*grpc.ClientConn
+	for _, ep := range cfg.GRPCEndpoints {
+		conn, err := grpc.NewClient(ep, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log("gRPC connect error (%s): %v", ep, err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+		grpcConns = append(grpcConns, conn)
+	}
+	log("gRPC pool: %d endpoint(s)", len(grpcConns))
+
+	// ---- Load accounts ----
+	// Baseline mode: load N accounts by prefix. Other modes: load single key.
+	var accounts []acctInfo
+	authClient := authtypes.NewQueryClient(grpcConns[0])
+
+	queryAccount := func(address string) (uint64, uint64, error) {
+		resp, err := authClient.Account(context.Background(), &authtypes.QueryAccountRequest{
+			Address: address,
+		})
+		if err != nil {
+			return 0, 0, err
+		}
+		var acct authtypes.BaseAccount
+		if err := cdc.Unmarshal(resp.Account.Value, &acct); err != nil {
+			return 0, 0, err
+		}
+		return acct.AccountNumber, acct.Sequence, nil
 	}
 
-	addr, err := rec.GetAddress()
-	if err != nil {
-		log("address error: %v", err)
-		os.Exit(1)
+	if cfg.Mode == "baseline" && *numAccounts > 0 {
+		log("Loading %d accounts (prefix=%s)...", *numAccounts, *keyPrefix)
+		accounts = make([]acctInfo, *numAccounts)
+		var mu sync.Mutex
+		var loadWg sync.WaitGroup
+		loadSem := make(chan struct{}, 20) // parallel account queries
+		var loadErr error
+		for i := 0; i < *numAccounts; i++ {
+			loadWg.Add(1)
+			loadSem <- struct{}{}
+			go func(idx int) {
+				defer loadWg.Done()
+				defer func() { <-loadSem }()
+				name := fmt.Sprintf("%s%d", *keyPrefix, idx)
+				rec, err := kr.Key(name)
+				if err != nil {
+					mu.Lock()
+					loadErr = fmt.Errorf("key %q: %w", name, err)
+					mu.Unlock()
+					return
+				}
+				addr, err := rec.GetAddress()
+				if err != nil {
+					mu.Lock()
+					loadErr = fmt.Errorf("addr %q: %w", name, err)
+					mu.Unlock()
+					return
+				}
+				num, seq, err := queryAccount(addr.String())
+				if err != nil {
+					mu.Lock()
+					loadErr = fmt.Errorf("query %q: %w", name, err)
+					mu.Unlock()
+					return
+				}
+				accounts[idx] = acctInfo{name: name, addr: addr, number: num, nextSeq: seq}
+			}(i)
+		}
+		loadWg.Wait()
+		if loadErr != nil {
+			log("account load error: %v", loadErr)
+			os.Exit(1)
+		}
+		cfg.TotalTxs = *numAccounts // one tx per account for baseline
+		log("Loaded %d accounts", len(accounts))
+	} else {
+		// Single-account mode (sequential, timestamp)
+		rec, err := kr.Key(*keyName)
+		if err != nil {
+			log("key %q not found: %v", *keyName, err)
+			os.Exit(1)
+		}
+		addr, err := rec.GetAddress()
+		if err != nil {
+			log("address error: %v", err)
+			os.Exit(1)
+		}
+		if cfg.AcctNumber == 0 {
+			num, seq, err := queryAccount(addr.String())
+			if err != nil {
+				log("auto-query account error: %v", err)
+				os.Exit(1)
+			}
+			cfg.AcctNumber = num
+			if cfg.StartSeq == 0 {
+				cfg.StartSeq = seq
+			}
+			log("Auto-queried account: number=%d sequence=%d", cfg.AcctNumber, cfg.StartSeq)
+		}
+		accounts = []acctInfo{{name: *keyName, addr: addr, number: cfg.AcctNumber, nextSeq: cfg.StartSeq}}
 	}
 
+	// Recipient defaults to first account's address
 	if cfg.Recipient == "" {
-		cfg.Recipient = addr.String()
+		cfg.Recipient = accounts[0].addr.String()
 	}
 	recip, err := sdk.AccAddressFromBech32(cfg.Recipient)
 	if err != nil {
 		log("invalid recipient: %v", err)
 		os.Exit(1)
 	}
-
-	// ---- gRPC ----
-	conn, err := grpc.NewClient(cfg.GRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log("gRPC connect error: %v", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	txClient := txtypes.NewServiceClient(conn)
 
 	// ---- WebSocket tracker ----
 	wsCtx, wsCancel := context.WithCancel(context.Background())
@@ -417,6 +629,7 @@ func main() {
 	time.Sleep(500 * time.Millisecond)
 
 	// ---- Phase 1: Pre-sign ----
+	startTime := time.Now()
 	log("Pre-signing %d txs (mode=%s)...", cfg.TotalTxs, cfg.Mode)
 
 	type signedTx struct {
@@ -425,26 +638,39 @@ func main() {
 		hash     string
 	}
 	txs := make([]signedTx, cfg.TotalTxs)
+	var lastTimestampNonce uint64 // timestamp nonce manager: tracks max used nonce
 
 	for i := 0; i < cfg.TotalTxs; i++ {
+		// Default: single-account sender (sequential, timestamp)
+		senderAddr := accounts[0].addr
+		senderName := accounts[0].name
+		acctNum := accounts[0].number
 		var seq uint64
+
 		switch cfg.Mode {
 		case "sequential":
 			seq = cfg.StartSeq + uint64(i)
 		case "timestamp":
-			seq = uint64(time.Now().UnixMicro()) + uint64(i)
-		case "mixed":
-			if i%2 == 0 {
-				seq = cfg.StartSeq + uint64(i/2)
-			} else {
-				seq = uint64(time.Now().UnixMicro()) + uint64(i)
+			// Timestamp nonce manager: use max(now_us, last+1) to guarantee uniqueness
+			now := uint64(time.Now().UnixMicro())
+			if now <= lastTimestampNonce {
+				now = lastTimestampNonce + 1
 			}
+			lastTimestampNonce = now
+			seq = now
+		case "baseline":
+			acct := &accounts[i%len(accounts)]
+			senderAddr = acct.addr
+			senderName = acct.name
+			acctNum = acct.number
+			seq = acct.nextSeq
+			acct.nextSeq++
 		default:
 			log("unknown mode: %s", cfg.Mode)
 			os.Exit(1)
 		}
 
-		msg := banktypes.NewMsgSend(addr, recip,
+		msg := banktypes.NewMsgSend(senderAddr, recip,
 			sdk.NewCoins(sdk.NewInt64Coin(cfg.Denom, cfg.Amount)))
 
 		txBuilder := txCfg.NewTxBuilder()
@@ -457,13 +683,13 @@ func main() {
 
 		factory := clienttx.Factory{}.
 			WithChainID(cfg.ChainID).
-			WithAccountNumber(cfg.AcctNumber).
+			WithAccountNumber(acctNum).
 			WithSequence(seq).
 			WithKeybase(kr).
 			WithTxConfig(txCfg).
 			WithSignMode(signing.SignMode_SIGN_MODE_DIRECT)
 
-		if err := clienttx.Sign(context.Background(), factory, *keyName, txBuilder, true); err != nil {
+		if err := clienttx.Sign(context.Background(), factory, senderName, txBuilder, true); err != nil {
 			log("sign error (tx %d, seq %d): %v", i, seq, err)
 			os.Exit(1)
 		}
@@ -474,7 +700,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Compute tx hash (SHA256 of encoded bytes, uppercase hex)
 		h := sha256.Sum256(txBz)
 		hash := strings.ToUpper(hex.EncodeToString(h[:]))
 
@@ -483,7 +708,19 @@ func main() {
 	log("Pre-signing complete.")
 
 	// ---- Phase 2: Broadcast ----
-	log("Broadcasting %d txs, concurrency=%d...", cfg.TotalTxs, cfg.Concurrency)
+	var txBroadcastMode txtypes.BroadcastMode
+	switch *broadcastMode {
+	case "async":
+		txBroadcastMode = txtypes.BroadcastMode_BROADCAST_MODE_ASYNC
+	default:
+		txBroadcastMode = txtypes.BroadcastMode_BROADCAST_MODE_SYNC
+	}
+	log("Broadcasting %d txs, concurrency=%d, mode=%s...", cfg.TotalTxs, cfg.Concurrency, *broadcastMode)
+
+	// Capture height BEFORE broadcasting starts so the block scanner
+	// doesn't miss txs included in blocks produced during the broadcast window.
+	rpcURL := strings.Replace(strings.Replace(cfg.WSAddr, "ws://", "http://", 1), "wss://", "https://", 1)
+	preBroadcastHeight := getBlockHeight(rpcURL)
 
 	results := make([]TxResult, cfg.TotalTxs)
 	var wg sync.WaitGroup
@@ -505,12 +742,15 @@ func main() {
 			// Register with tracker before broadcast
 			tracker.trackBroadcast(tx.hash, broadcastTime)
 
+			// Round-robin across gRPC endpoints
+			txClient := txtypes.NewServiceClient(grpcConns[idx%len(grpcConns)])
+
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
 			resp, err := txClient.BroadcastTx(ctx, &txtypes.BroadcastTxRequest{
 				TxBytes: tx.bytes,
-				Mode:    txtypes.BroadcastMode_BROADCAST_MODE_SYNC,
+				Mode:    txBroadcastMode,
 			})
 
 			broadcastLat := time.Since(broadcastTime)
@@ -563,9 +803,12 @@ func main() {
 		log("Waiting for block inclusion of %d accepted txs (up to %d blocks)...", accepted, *waitBlocks)
 
 		deadline := time.Now().Add(time.Duration(*waitBlocks) * 2 * time.Second)
-		pollInterval := 200 * time.Millisecond
+		pollInterval := 1 * time.Second
 
 		for time.Now().Before(deadline) {
+			// Scan blocks via RPC (reliable, no event dropping)
+			tracker.scanBlocks(rpcURL, preBroadcastHeight)
+
 			if tracker.allConfirmed(accepted) {
 				log("All %d txs confirmed!", accepted)
 				break
@@ -639,13 +882,8 @@ func main() {
 	}
 	sort.Slice(heights, func(i, j int) bool { return heights[i] < heights[j] })
 
-	for i, h := range heights {
-		bs := BlockStat{Height: h, TxCount: blockTxCounts[h]}
-		if i > 0 {
-			// Approximate inter-block time from heights (1 height = ~1s with our config)
-			bs.BlockTime = float64(h-heights[i-1]) * 1000 // rough ms
-		}
-		blockStats = append(blockStats, bs)
+	for _, h := range heights {
+		blockStats = append(blockStats, BlockStat{Height: h, TxCount: blockTxCounts[h]})
 	}
 
 	// TPS calculations
@@ -675,6 +913,8 @@ func main() {
 			BroadcastLatency: computeLatencyStats(broadcastLats),
 			InclusionLatency: computeLatencyStats(inclusionLats),
 			DurationMs:       broadcastElapsed.Milliseconds(),
+			TotalDurationMs:  time.Since(startTime).Milliseconds(),
+			StartedAt:        startTime.UTC().Format(time.RFC3339),
 			BlockStats:       blockStats,
 		},
 		Failures: failures,

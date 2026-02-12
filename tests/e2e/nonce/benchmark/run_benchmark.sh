@@ -5,10 +5,12 @@
 set -euo pipefail
 
 HOME_DIR="${GAIA_HOME:-/root/.gaia}"
-GRPC="${GRPC_ENDPOINTS%%,*}"  # Use first endpoint
-# Derive WS host from gRPC address (same host, port 26657)
-WS_HOST="${GRPC%%:*}"
+GRPC="${GRPC_ENDPOINTS:-node:9090}"
+# Derive WS host from first gRPC endpoint
+FIRST_GRPC="${GRPC%%,*}"
+WS_HOST="${FIRST_GRPC%%:*}"
 WS_URL="ws://${WS_HOST}:26657"
+RPC_URL="http://${WS_HOST}:26657"
 
 CHAIN_ID="nonce-test"
 KEY_NAME="validator"
@@ -16,17 +18,27 @@ RESULTS_DIR="/tmp/benchmark-results"
 
 mkdir -p "$RESULTS_DIR"
 
-# Get account info
 VALIDATOR_ADDR=$(gaiad keys show "$KEY_NAME" -a --keyring-backend test --home "$HOME_DIR")
 echo "Benchmark account: $VALIDATOR_ADDR"
-
-ACCT_INFO=$(gaiad query auth account "$VALIDATOR_ADDR" --node "http://${WS_HOST}:26657" --home "$HOME_DIR" -o json 2>/dev/null)
-ACCT_NUM=$(echo "$ACCT_INFO" | jq -r '.account.value.account_number // .account.account_number // "0"')
-CURR_SEQ=$(echo "$ACCT_INFO" | jq -r '.account.value.sequence // .account.sequence // "0"')
-
-echo "Account number: $ACCT_NUM, Current sequence: $CURR_SEQ"
 echo "gRPC: $GRPC, WebSocket: $WS_URL"
 echo ""
+
+# Wait for N new blocks (polls /status). More reliable than sleep.
+wait_blocks() {
+  local n="${1:-2}"
+  local start_height
+  start_height=$(curl -sf "${RPC_URL}/status" | jq -r '.result.sync_info.latest_block_height')
+  local target=$((start_height + n))
+  echo "  waiting for block $target (current: $start_height)..."
+  while true; do
+    local cur
+    cur=$(curl -sf "${RPC_URL}/status" | jq -r '.result.sync_info.latest_block_height')
+    if [ "$cur" -ge "$target" ] 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+}
 
 run_scenario() {
   local NAME="$1"
@@ -38,11 +50,6 @@ run_scenario() {
   echo "=== Scenario: $NAME ==="
   echo "  mode=$MODE total=$TOTAL concurrency=$CONCURRENCY"
 
-  # Re-query sequence before each scenario (sequential mode needs current seq)
-  local SEQ
-  SEQ=$(gaiad query auth account "$VALIDATOR_ADDR" --node "http://${WS_HOST}:26657" --home "$HOME_DIR" -o json 2>/dev/null | \
-    jq -r '.account.value.sequence // .account.sequence // "0"')
-
   spammer \
     --mode "$MODE" \
     --total "$TOTAL" \
@@ -50,8 +57,6 @@ run_scenario() {
     --chain-id "$CHAIN_ID" \
     --grpc "$GRPC" \
     --ws "$WS_URL" \
-    --account-number "$ACCT_NUM" \
-    --start-seq "$SEQ" \
     --key-home "$HOME_DIR" \
     --key-name "$KEY_NAME" \
     --recipient "$VALIDATOR_ADDR" \
@@ -65,8 +70,8 @@ run_scenario() {
   jq '{accepted: .summary.total_accepted, confirmed: .summary.total_confirmed, failed: .summary.total_failed, broadcast_tps: .summary.broadcast_tps, confirmed_tps: .summary.confirmed_tps, broadcast_p50: .summary.broadcast_latency.p50_ms, inclusion_p50: .summary.inclusion_latency.p50_ms}' "$RESULTS_DIR/$NAME.json"
   echo ""
 
-  # Wait a few blocks between scenarios for state to settle
-  sleep 5
+  # Wait for 2 new blocks between scenarios so state settles
+  wait_blocks 2
 }
 
 echo "========================================"

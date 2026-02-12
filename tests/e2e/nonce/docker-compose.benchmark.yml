@@ -33,6 +33,7 @@ services:
       - bench-data:/root/.gaia
       - ./scripts:/scripts:ro
       - ./benchmark:/benchmark:ro
+      - ./benchmark/results:/tmp/benchmark-results
     environment:
       - GRPC_ENDPOINTS=node:9090
       - GAIA_HOME=/root/.gaia
