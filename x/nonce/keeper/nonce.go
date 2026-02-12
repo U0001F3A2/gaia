@@ -25,6 +25,18 @@ func (k Keeper) SetNonce(ctx context.Context, addr []byte, timestampUs uint64) e
 
 // ValidateAndConsumeTimestampNonce validates that a timestamp nonce is within the
 // allowed time window and has not been previously consumed, then marks it as used.
+// It fetches params from state. Use ValidateAndConsumeWithParams to avoid a
+// redundant params read when the caller already has them (e.g. ante handler).
+func (k Keeper) ValidateAndConsumeTimestampNonce(ctx context.Context, addr []byte, nonceUs uint64) error {
+	params, err := k.GetParams(ctx)
+	if err != nil {
+		return err
+	}
+	return k.ValidateAndConsumeWithParams(ctx, addr, nonceUs, params)
+}
+
+// ValidateAndConsumeWithParams is like ValidateAndConsumeTimestampNonce but
+// accepts pre-fetched params, avoiding a redundant store read.
 //
 // Algorithm:
 // 1. Get block time in microseconds
@@ -33,13 +45,8 @@ func (k Keeper) SetNonce(ctx context.Context, addr []byte, timestampUs uint64) e
 // 4. Reject if nonce < lower bound (expired) or nonce > upper bound (future)
 // 5. Reject if already consumed (duplicate)
 // 6. Consume: store nonce
-func (k Keeper) ValidateAndConsumeTimestampNonce(ctx context.Context, addr []byte, nonceUs uint64) error {
+func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, nonceUs uint64, params types.Params) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
-	params, err := k.GetParams(ctx)
-	if err != nil {
-		return err
-	}
-
 	blockTimeUs := uint64(sdkCtx.BlockTime().UnixMicro())
 
 	// Underflow-safe lower bound

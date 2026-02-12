@@ -36,6 +36,7 @@ import (
 type NonceKeeper interface {
 	GetParams(ctx sdk.Context) (types.Params, error)
 	ValidateAndConsumeTimestampNonce(ctx sdk.Context, addr []byte, nonceUs uint64) error
+	ValidateAndConsumeWithParams(ctx sdk.Context, addr []byte, nonceUs uint64, params types.Params) error
 }
 
 type SigVerificationDecorator struct {
@@ -128,7 +129,7 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 			}
 
 			if sig.Sequence >= params.TimestampNonceCutoff {
-				if err := svd.nk.ValidateAndConsumeTimestampNonce(ctx, signers[i], sig.Sequence); err != nil {
+				if err := svd.nk.ValidateAndConsumeWithParams(ctx, signers[i], sig.Sequence, params); err != nil {
 					return ctx, err
 				}
 
@@ -211,4 +212,8 @@ func (a NonceKeeperAdapter) GetParams(ctx sdk.Context) (types.Params, error) {
 
 func (a NonceKeeperAdapter) ValidateAndConsumeTimestampNonce(ctx sdk.Context, addr []byte, nonceUs uint64) error {
 	return a.K.ValidateAndConsumeTimestampNonce(ctx, addr, nonceUs)
+}
+
+func (a NonceKeeperAdapter) ValidateAndConsumeWithParams(ctx sdk.Context, addr []byte, nonceUs uint64, params types.Params) error {
+	return a.K.ValidateAndConsumeWithParams(ctx, addr, nonceUs, params)
 }

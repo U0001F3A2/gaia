@@ -6,6 +6,7 @@ option go_package = "github.com/cosmos/gaia/x/nonce/types";
 import "gogoproto/gogo.proto";
 import "google/api/annotations.proto";
 import "cosmos/query/v1/query.proto";
+import "cosmos/base/query/v1beta1/pagination.proto";
 import "amino/amino.proto";
 import "gaia/nonce/v1/nonce.proto";
 
@@ -48,8 +49,10 @@ message QueryHasNonceResponse {
 
 message QueryNoncesByAddressRequest {
   string address = 1;
+  cosmos.base.query.v1beta1.PageRequest pagination = 2;
 }
 
 message QueryNoncesByAddressResponse {
   repeated uint64 timestamp_nonces = 1;
+  cosmos.base.query.v1beta1.PageResponse pagination = 2;
 }

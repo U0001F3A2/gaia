@@ -16,6 +16,7 @@ type msgServer struct {
 	Keeper *Keeper
 }
 
+// NewMsgServerImpl returns an implementation of the x/nonce MsgServer interface.
 func NewMsgServerImpl(keeper *Keeper) types.MsgServer {
 	return &msgServer{Keeper: keeper}
 }

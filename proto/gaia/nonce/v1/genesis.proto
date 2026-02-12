@@ -9,8 +9,10 @@ import "gaia/nonce/v1/nonce.proto";
 
 // GenesisState defines the x/nonce module's genesis state.
 message GenesisState {
+  // params are the module parameters (time windows, cutoff threshold).
   Params params = 1
       [ (gogoproto.nullable) = false, (amino.dont_omitempty) = true ];
 
+  // nonce_entries are all currently active (non-expired) consumed timestamp nonces.
   repeated NonceEntry nonce_entries = 2 [ (gogoproto.nullable) = false ];
 }

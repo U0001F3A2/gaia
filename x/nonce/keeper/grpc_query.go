@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 
+	"github.com/cosmos/cosmos-sdk/types/query"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/cosmos/gaia/v26/x/nonce/types"
@@ -11,6 +13,7 @@ import (
 
 var _ types.QueryServer = Querier{}
 
+// Querier implements the x/nonce gRPC query server.
 type Querier struct {
 	Keeper *Keeper
 }
@@ -42,25 +45,60 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 	}
 
 	store := q.Keeper.storeService.OpenKVStore(ctx)
-	iter, err := store.Iterator(types.NonceIteratorPrefix(), nil)
+	prefix := types.NonceIteratorPrefix()
+	addrBytes := []byte(addr)
+
+	// Determine page limit (default 100, cap at 1000).
+	limit := uint64(100)
+	var offset uint64
+	if req.Pagination != nil {
+		if req.Pagination.Limit > 0 {
+			limit = req.Pagination.Limit
+		}
+		offset = req.Pagination.Offset
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	iter, err := store.Iterator(prefix, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer iter.Close()
 
 	var nonces []uint64
-	prefix := types.NonceIteratorPrefix()
-	addrBytes := []byte(addr)
+	var matched uint64
 	for ; iter.Valid(); iter.Next() {
 		key := iter.Key()
 		if len(key) < len(prefix) || key[0] != prefix[0] {
 			break
 		}
 		tsUs, keyAddr := types.ParseNonceKey(key)
-		if bytes.Equal(keyAddr, addrBytes) {
-			nonces = append(nonces, tsUs)
+		if !bytes.Equal(keyAddr, addrBytes) {
+			continue
 		}
+		// Skip entries before the offset.
+		if matched < offset {
+			matched++
+			continue
+		}
+		if uint64(len(nonces)) >= limit {
+			// There are more results; build a next key.
+			return &types.QueryNoncesByAddressResponse{
+				TimestampNonces: nonces,
+				Pagination: &query.PageResponse{
+					NextKey: key,
+					Total:   0, // total unknown without full scan
+				},
+			}, nil
+		}
+		nonces = append(nonces, tsUs)
+		matched++
 	}
 
-	return &types.QueryNoncesByAddressResponse{TimestampNonces: nonces}, nil
+	return &types.QueryNoncesByAddressResponse{
+		TimestampNonces: nonces,
+		Pagination:      &query.PageResponse{Total: uint64(len(nonces))},
+	}, nil
 }

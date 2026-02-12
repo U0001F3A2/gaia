@@ -26,6 +26,8 @@ message Params {
 
 // NonceEntry represents a consumed timestamp nonce for genesis export/import.
 message NonceEntry {
+  // timestamp_us is the nonce value in microseconds since Unix epoch.
   uint64 timestamp_us = 1;
+  // address is the bech32-encoded account address that consumed this nonce.
   string address = 2;
 }

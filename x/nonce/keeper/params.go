@@ -6,6 +6,7 @@ import (
 	"github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
+// SetParams persists the module parameters to the KV store.
 func (k Keeper) SetParams(ctx context.Context, params types.Params) error {
 	store := k.storeService.OpenKVStore(ctx)
 	bz, err := k.cdc.Marshal(&params)
@@ -15,6 +16,8 @@ func (k Keeper) SetParams(ctx context.Context, params types.Params) error {
 	return store.Set(types.ParamsKey, bz)
 }
 
+// GetParams reads the module parameters from the KV store. Returns
+// DefaultParams if no params have been persisted yet.
 func (k Keeper) GetParams(ctx context.Context) (types.Params, error) {
 	store := k.storeService.OpenKVStore(ctx)
 	bz, err := store.Get(types.ParamsKey)

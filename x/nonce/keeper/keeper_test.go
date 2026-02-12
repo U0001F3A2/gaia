@@ -1,6 +1,7 @@
 package keeper_test
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/types/query"
+	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
 
 	"github.com/cosmos/gaia/v26/x/nonce/keeper"
 	"github.com/cosmos/gaia/v26/x/nonce/types"
@@ -382,4 +385,207 @@ func (s *KeeperTestSuite) TestValidateGenesis() {
 	gs = types.DefaultGenesisState()
 	gs.Params.TimestampNonceCutoff = 0
 	s.Error(types.ValidateGenesis(gs))
+}
+
+// --- Edge Case: Zero timestamp at genesis block ---
+
+func (s *KeeperTestSuite) TestValidateTimestampNonce_GenesisBlockTime() {
+	// Block time = 0 (genesis). Lower bound = max(0, 0 - window) = 0.
+	genesisCtx := s.ctx.WithBlockTime(time.Unix(0, 0))
+	addr := s.addrs[0]
+
+	// Nonce = 0 should pass bounds check (>= lowerBound=0, <= upperBound=futureWindow).
+	err := s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
+	s.NoError(err)
+
+	// Duplicate at nonce=0
+	err = s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
+	s.ErrorIs(err, types.ErrNonceDuplicate)
+
+	// A nonce within future window should also work
+	err = s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs)
+	s.NoError(err)
+
+	// A nonce beyond future window should fail
+	err = s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs+1)
+	s.ErrorIs(err, types.ErrNonceTooFarInFuture)
+}
+
+// --- Edge Case: uint64 overflow on upper bound ---
+
+func (s *KeeperTestSuite) TestValidateTimestampNonce_UpperBoundOverflow() {
+	// Set block time very large so that blockTimeUs + futureWindowUs overflows uint64.
+	// time.Unix max safe is ~year 2262 for UnixMicro to fit in int64.
+	// We use ValidateAndConsumeWithParams directly to control params.
+	addr := s.addrs[0]
+
+	// Near-max block time that fits in int64 microseconds: use 2200-01-01
+	farFutureCtx := s.ctx.WithBlockTime(time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC))
+	blockTimeUs := uint64(farFutureCtx.BlockTime().UnixMicro())
+
+	// Set future window so large it would overflow
+	overflowParams := types.Params{
+		PastWindowUs:         types.DefaultPastWindowUs,
+		FutureWindowUs:       math.MaxUint64 - blockTimeUs + 1, // exactly causes overflow
+		TimestampNonceCutoff: types.DefaultTimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(farFutureCtx, overflowParams))
+
+	// upperBound wraps to a small number. A nonce at block time would be > the
+	// wrapped upperBound, causing incorrect rejection. This documents the
+	// overflow behavior -- production configs should never set such large windows.
+	err := s.keeper.ValidateAndConsumeTimestampNonce(farFutureCtx, addr, blockTimeUs)
+	s.ErrorIs(err, types.ErrNonceTooFarInFuture, "overflow produces wrapped upper bound")
+}
+
+// --- Edge Case: Future boundary exactness ---
+
+func (s *KeeperTestSuite) TestValidateTimestampNonce_FutureBoundaryExact() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Exactly at upper bound: should succeed
+	exactUpper := blockTimeUs + types.DefaultFutureWindowUs
+	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, exactUpper)
+	s.NoError(err, "nonce at exact upper bound should be accepted")
+
+	// One past upper bound: should fail
+	addr2 := s.addrs[1]
+	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr2, exactUpper+1)
+	s.ErrorIs(err, types.ErrNonceTooFarInFuture, "nonce one past upper bound should be rejected")
+}
+
+// --- Edge Case: ValidateAndConsumeWithParams matches ValidateAndConsumeTimestampNonce ---
+
+func (s *KeeperTestSuite) TestValidateAndConsumeWithParams() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+	params, err := s.keeper.GetParams(s.ctx)
+	s.NoError(err)
+
+	err = s.keeper.ValidateAndConsumeWithParams(s.ctx, addr, blockTimeUs, params)
+	s.NoError(err)
+
+	// Verify it's consumed
+	has, err := s.keeper.HasNonce(s.ctx, addr, blockTimeUs)
+	s.NoError(err)
+	s.True(has)
+
+	// Duplicate via WithParams
+	err = s.keeper.ValidateAndConsumeWithParams(s.ctx, addr, blockTimeUs, params)
+	s.ErrorIs(err, types.ErrNonceDuplicate)
+}
+
+// --- Prune: batched deletion works for > 256 entries ---
+
+func (s *KeeperTestSuite) TestPruneLargeBatch() {
+	addr := s.addrs[0]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// Create 300 expired nonces (> batch size of 256).
+	expiredBase := blockTimeUs - types.DefaultPastWindowUs - 1_000_000
+	for i := uint64(0); i < 300; i++ {
+		s.NoError(s.keeper.SetNonce(s.ctx, addr, expiredBase+i))
+	}
+
+	// One valid nonce
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+
+	// All expired should be gone
+	for i := uint64(0); i < 300; i++ {
+		has, _ := s.keeper.HasNonce(s.ctx, addr, expiredBase+i)
+		s.False(has, "expired nonce %d should be pruned", i)
+	}
+
+	// Valid should remain
+	has, _ := s.keeper.HasNonce(s.ctx, addr, blockTimeUs)
+	s.True(has, "valid nonce should remain")
+}
+
+// --- Pagination test for NoncesByAddress ---
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Paginated() {
+	q := keeper.Querier{Keeper: s.keeper}
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Create 5 nonces
+	for i := uint64(0); i < 5; i++ {
+		s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs+i))
+	}
+
+	// Page 1: limit 2
+	resp, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address:    addr.String(),
+		Pagination: &query.PageRequest{Limit: 2},
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 2)
+	s.NotNil(resp.Pagination)
+	s.NotEmpty(resp.Pagination.NextKey, "should have next key when more results exist")
+
+	// Page 2: offset 2, limit 2
+	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address:    addr.String(),
+		Pagination: &query.PageRequest{Offset: 2, Limit: 2},
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 2)
+	s.NotNil(resp.Pagination)
+	s.NotEmpty(resp.Pagination.NextKey)
+
+	// Page 3: offset 4, limit 2 (only 1 remaining)
+	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address:    addr.String(),
+		Pagination: &query.PageRequest{Offset: 4, Limit: 2},
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 1)
+	s.NotNil(resp.Pagination)
+
+	// No pagination param: defaults to limit 100, should return all 5
+	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: addr.String(),
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 5)
+}
+
+// --- MsgUpdateParams governance test ---
+
+func (s *KeeperTestSuite) TestMsgUpdateParams() {
+	ms := keeper.NewMsgServerImpl(s.keeper)
+
+	// Valid authority
+	newParams := types.Params{
+		PastWindowUs:         uint64(10 * time.Minute.Microseconds()),
+		FutureWindowUs:       uint64(10 * time.Minute.Microseconds()),
+		TimestampNonceCutoff: 1 << 42,
+	}
+	_, err := ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+		Authority: "cosmos1authority",
+		Params:    newParams,
+	})
+	s.NoError(err)
+
+	got, err := s.keeper.GetParams(s.ctx)
+	s.NoError(err)
+	s.Equal(newParams, got)
+
+	// Wrong authority
+	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+		Authority: "cosmos1wrongauthority",
+		Params:    types.DefaultParams(),
+	})
+	s.Error(err)
+	s.ErrorContains(err, govtypes.ErrInvalidSigner.Error())
+
+	// Invalid params (cutoff = 0)
+	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+		Authority: "cosmos1authority",
+		Params:    types.Params{TimestampNonceCutoff: 0},
+	})
+	s.Error(err)
 }

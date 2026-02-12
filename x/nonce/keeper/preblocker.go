@@ -39,26 +39,41 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 	start := types.NonceIteratorPrefix()
 	end := types.BuildNoncePrefixUpTo(cutoffUs)
 
-	iter, err := store.Iterator(start, end)
-	if err != nil {
-		return err
-	}
-	defer iter.Close()
+	// Delete in fixed-size batches to bound peak memory under high throughput.
+	const batchSize = 256
+	batch := make([][]byte, 0, batchSize)
+	totalPruned := 0
 
-	// Collect keys to delete (can't delete during iteration on some backends).
-	var keysToDelete [][]byte
-	for ; iter.Valid(); iter.Next() {
-		keysToDelete = append(keysToDelete, iter.Key())
-	}
-
-	for _, key := range keysToDelete {
-		if err := store.Delete(key); err != nil {
+	for {
+		iter, err := store.Iterator(start, end)
+		if err != nil {
 			return err
 		}
+
+		batch = batch[:0]
+		for ; iter.Valid() && len(batch) < batchSize; iter.Next() {
+			// Copy key since iterator keys may be reused after Close.
+			key := iter.Key()
+			keyCopy := make([]byte, len(key))
+			copy(keyCopy, key)
+			batch = append(batch, keyCopy)
+		}
+		iter.Close()
+
+		if len(batch) == 0 {
+			break
+		}
+
+		for _, key := range batch {
+			if err := store.Delete(key); err != nil {
+				return err
+			}
+		}
+		totalPruned += len(batch)
 	}
 
-	if len(keysToDelete) > 0 {
-		k.Logger(ctx).Debug("pruned expired timestamp nonces", "count", len(keysToDelete))
+	if totalPruned > 0 {
+		k.Logger(ctx).Debug("pruned expired timestamp nonces", "count", totalPruned)
 	}
 
 	return nil

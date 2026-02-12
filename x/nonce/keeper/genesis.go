@@ -6,6 +6,8 @@ import (
 	"github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
+// InitGenesis initializes the x/nonce module state from a GenesisState.
+// It persists params and re-inserts all exported nonce entries.
 func (k Keeper) InitGenesis(ctx sdk.Context, gs *types.GenesisState) {
 	if err := k.SetParams(ctx, gs.Params); err != nil {
 		panic(err)
@@ -22,6 +24,8 @@ func (k Keeper) InitGenesis(ctx sdk.Context, gs *types.GenesisState) {
 	}
 }
 
+// ExportGenesis exports the current x/nonce module state as a GenesisState.
+// It iterates all stored nonce entries and includes the current params.
 func (k Keeper) ExportGenesis(ctx sdk.Context) *types.GenesisState {
 	params, err := k.GetParams(ctx)
 	if err != nil {
