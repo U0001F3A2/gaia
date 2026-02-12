@@ -104,6 +104,7 @@ type Summary struct {
 	TotalDurationMs   int64        `json:"total_duration_ms"`
 	StartedAt         string       `json:"started_at"`
 	BlockStats        []BlockStat  `json:"block_stats"`
+	TotalRetries      int64        `json:"total_retries"`
 }
 
 type FailureCounts struct {
@@ -455,6 +456,7 @@ func main() {
 		emitTxs       = flag.Bool("emit-txs", false, "include per-tx results in output")
 		waitBlocks    = flag.Int("wait-blocks", 10, "max blocks to wait for inclusion after broadcast")
 		broadcastMode = flag.String("broadcast-mode", "sync", "broadcast mode: sync (wait for CheckTx) or async (fire-and-forget)")
+		retrySeq      = flag.Int("retry-seq", 0, "max retries per tx on wrong_sequence (SYNC) or max re-broadcast rounds (ASYNC)")
 	)
 	flag.Parse()
 
@@ -726,6 +728,7 @@ func main() {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, cfg.Concurrency)
 	var submitted atomic.Int64
+	var totalRetries atomic.Int64
 
 	broadcastStart := time.Now()
 
@@ -742,16 +745,35 @@ func main() {
 			// Register with tracker before broadcast
 			tracker.trackBroadcast(tx.hash, broadcastTime)
 
-			// Round-robin across gRPC endpoints
-			txClient := txtypes.NewServiceClient(grpcConns[idx%len(grpcConns)])
+			// SYNC retry: on wrong_sequence (code 32), backoff and retry on next endpoint.
+			// Gossip needs time to propagate the previous tx to other nodes.
+			maxAttempts := 1
+			if *broadcastMode == "sync" && *retrySeq > 0 {
+				maxAttempts = 1 + *retrySeq
+			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+			var resp *txtypes.BroadcastTxResponse
+			var err error
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				txClient := txtypes.NewServiceClient(grpcConns[(idx+attempt)%len(grpcConns)])
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				resp, err = txClient.BroadcastTx(ctx, &txtypes.BroadcastTxRequest{
+					TxBytes: tx.bytes,
+					Mode:    txBroadcastMode,
+				})
+				cancel()
 
-			resp, err := txClient.BroadcastTx(ctx, &txtypes.BroadcastTxRequest{
-				TxBytes: tx.bytes,
-				Mode:    txBroadcastMode,
-			})
+				if err == nil && resp != nil && resp.TxResponse != nil &&
+					resp.TxResponse.Code == 32 && attempt < maxAttempts-1 {
+					totalRetries.Add(1)
+					backoff := time.Duration(math.Min(
+						float64(100)*math.Pow(2, float64(attempt)), 2000,
+					)) * time.Millisecond
+					time.Sleep(backoff)
+					continue
+				}
+				break
+			}
 
 			broadcastLat := time.Since(broadcastTime)
 
@@ -804,6 +826,7 @@ func main() {
 
 		deadline := time.Now().Add(time.Duration(*waitBlocks) * 2 * time.Second)
 		pollInterval := 1 * time.Second
+		asyncRetryRound := 0
 
 		for time.Now().Before(deadline) {
 			// Scan blocks via RPC (reliable, no event dropping)
@@ -813,6 +836,33 @@ func main() {
 				log("All %d txs confirmed!", accepted)
 				break
 			}
+
+			// ASYNC retry: re-broadcast unconfirmed txs each poll cycle.
+			// ASYNC masks CheckTx failures (returns code 0 always), so we detect
+			// unconfirmed txs via block scanning and re-broadcast them.
+			if *broadcastMode == "async" && *retrySeq > 0 && asyncRetryRound < *retrySeq {
+				var unconfirmed []int
+				for i, r := range results {
+					if r.BroadcastCode == 0 && r.Error == "" {
+						if _, ok := tracker.getConfirmation(r.TxHash); !ok {
+							unconfirmed = append(unconfirmed, i)
+						}
+					}
+				}
+				if len(unconfirmed) > 0 {
+					asyncRetryRound++
+					log("Async retry round %d: re-broadcasting %d unconfirmed txs...", asyncRetryRound, len(unconfirmed))
+					for _, ui := range unconfirmed {
+						tx := txs[ui]
+						txClient := txtypes.NewServiceClient(grpcConns[(ui+asyncRetryRound)%len(grpcConns)])
+						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+						txClient.BroadcastTx(ctx, &txtypes.BroadcastTxRequest{TxBytes: tx.bytes, Mode: txBroadcastMode})
+						cancel()
+						totalRetries.Add(1)
+					}
+				}
+			}
+
 			time.Sleep(pollInterval)
 		}
 	}
@@ -916,6 +966,7 @@ func main() {
 			TotalDurationMs:  time.Since(startTime).Milliseconds(),
 			StartedAt:        startTime.UTC().Format(time.RFC3339),
 			BlockStats:       blockStats,
+			TotalRetries:     totalRetries.Load(),
 		},
 		Failures: failures,
 	}
@@ -927,6 +978,6 @@ func main() {
 	out, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(out))
 
-	log("Done. accepted=%d confirmed=%d failed=%d broadcast_tps=%.1f confirmed_tps=%.1f",
-		accepted, confirmed, failed, broadcastTPS, confirmedTPS)
+	log("Done. accepted=%d confirmed=%d failed=%d retries=%d broadcast_tps=%.1f confirmed_tps=%.1f",
+		accepted, confirmed, failed, totalRetries.Load(), broadcastTPS, confirmedTPS)
 }
