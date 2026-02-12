@@ -8,6 +8,9 @@ import (
 
 // SetParams persists the module parameters to the KV store.
 func (k Keeper) SetParams(ctx context.Context, params types.Params) error {
+	if err := params.Validate(); err != nil {
+		return err
+	}
 	store := k.storeService.OpenKVStore(ctx)
 	bz, err := k.cdc.Marshal(&params)
 	if err != nil {

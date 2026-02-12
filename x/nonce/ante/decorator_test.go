@@ -301,7 +301,7 @@ func TestSigVerify_MultiSig_DifferentTimestamps(t *testing.T) {
 
 	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
 
-	// Signers use different timestamps -- should be rejected
+	// Signers use different timestamps -- each validated independently
 	testTx := s.createSignedTx(t,
 		[]cryptotypes.PrivKey{acct1.priv, acct2.priv},
 		[]uint64{1000, 1001},
@@ -317,7 +317,17 @@ func TestSigVerify_MultiSig_DifferentTimestamps(t *testing.T) {
 	handler := sdk.ChainAnteDecorators(svd)
 
 	_, err := handler(s.ctx, testTx, true)
-	require.ErrorIs(t, err, noncetypes.ErrMixedMultiSigNonce)
+	require.NoError(t, err)
+
+	// Both nonces consumed independently
+	addr1 := sdk.AccAddress(acct1.priv.PubKey().Address())
+	addr2 := sdk.AccAddress(acct2.priv.PubKey().Address())
+	has1, err := s.nonceKeeper.HasNonce(s.ctx, addr1, blockTimeUs)
+	require.NoError(t, err)
+	require.True(t, has1, "acct1 timestamp nonce should be consumed")
+	has2, err := s.nonceKeeper.HasNonce(s.ctx, addr2, blockTimeUs+1)
+	require.NoError(t, err)
+	require.True(t, has2, "acct2 timestamp nonce should be consumed")
 }
 
 // --- IncrementSequenceDecorator Tests ---

@@ -28,5 +28,11 @@ func (p Params) Validate() error {
 	if p.TimestampNonceCutoff == 0 {
 		return fmt.Errorf("timestamp_nonce_cutoff must be > 0")
 	}
+	if p.PastWindowUs == 0 {
+		return fmt.Errorf("past_window_us must be > 0")
+	}
+	if p.FutureWindowUs == 0 {
+		return fmt.Errorf("future_window_us must be > 0")
+	}
 	return nil
 }

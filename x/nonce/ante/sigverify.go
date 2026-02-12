@@ -105,7 +105,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 	}
 
 	timestampSigners := make(TimestampSignerSet)
-	var sharedTimestampNonce *uint64
 
 	for i, sig := range sigs {
 		if sig.Sequence > 0 && isUnordered {
@@ -131,13 +130,6 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 			if sig.Sequence >= params.TimestampNonceCutoff {
 				if err := svd.nk.ValidateAndConsumeWithParams(ctx, signers[i], sig.Sequence, params); err != nil {
 					return ctx, err
-				}
-
-				if sharedTimestampNonce == nil {
-					seq := sig.Sequence
-					sharedTimestampNonce = &seq
-				} else if *sharedTimestampNonce != sig.Sequence {
-					return ctx, types.ErrMixedMultiSigNonce
 				}
 
 				timestampSigners[string(signers[i])] = true

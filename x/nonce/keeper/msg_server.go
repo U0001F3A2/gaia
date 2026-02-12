@@ -5,6 +5,7 @@ import (
 
 	errorsmod "cosmossdk.io/errors"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
 
 	"github.com/cosmos/gaia/v26/x/nonce/types"
@@ -33,6 +34,12 @@ func (ms msgServer) UpdateParams(ctx context.Context, msg *types.MsgUpdateParams
 	if err := ms.Keeper.SetParams(ctx, msg.Params); err != nil {
 		return nil, err
 	}
+
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(
+		"update_nonce_params",
+		sdk.NewAttribute("authority", msg.Authority),
+	))
 
 	return &types.MsgUpdateParamsResponse{}, nil
 }

@@ -2,6 +2,7 @@ package keeper
 
 import (
 	"context"
+	"fmt"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
@@ -56,6 +57,9 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 	}
 
 	upperBound := blockTimeUs + params.FutureWindowUs
+	if upperBound < blockTimeUs {
+		return fmt.Errorf("future window overflow: blockTime=%d + futureWindow=%d", blockTimeUs, params.FutureWindowUs)
+	}
 
 	if nonceUs < lowerBound {
 		return types.ErrNonceExpired

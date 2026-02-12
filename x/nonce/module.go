@@ -97,6 +97,12 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, cdc codec.JSONCodec) json.Raw
 func (AppModule) ConsensusVersion() uint64 { return consensusVersion }
 
 // PreBlock prunes expired timestamp nonces at the start of each block.
+// Pruning errors are logged but not propagated -- a failed prune should not
+// halt the chain; leftover entries will be cleaned up in subsequent blocks.
 func (am AppModule) PreBlock(ctx context.Context) (appmodule.ResponsePreBlock, error) {
-	return sdk.ResponsePreBlock{}, am.keeper.PruneExpiredNonces(ctx)
+	if err := am.keeper.PruneExpiredNonces(ctx); err != nil {
+		sdkCtx := sdk.UnwrapSDKContext(ctx)
+		sdkCtx.Logger().Error("x/nonce: PreBlocker prune failed", "err", err)
+	}
+	return sdk.ResponsePreBlock{}, nil
 }

@@ -431,11 +431,10 @@ func (s *KeeperTestSuite) TestValidateTimestampNonce_UpperBoundOverflow() {
 	}
 	s.NoError(s.keeper.SetParams(farFutureCtx, overflowParams))
 
-	// upperBound wraps to a small number. A nonce at block time would be > the
-	// wrapped upperBound, causing incorrect rejection. This documents the
-	// overflow behavior -- production configs should never set such large windows.
+	// upperBound overflows -- should return an error rather than silently wrapping.
 	err := s.keeper.ValidateAndConsumeTimestampNonce(farFutureCtx, addr, blockTimeUs)
-	s.ErrorIs(err, types.ErrNonceTooFarInFuture, "overflow produces wrapped upper bound")
+	s.Error(err, "overflow should return error")
+	s.Contains(err.Error(), "future window overflow")
 }
 
 // --- Edge Case: Future boundary exactness ---
@@ -526,20 +525,20 @@ func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Paginated() {
 	s.NotNil(resp.Pagination)
 	s.NotEmpty(resp.Pagination.NextKey, "should have next key when more results exist")
 
-	// Page 2: offset 2, limit 2
+	// Page 2: use NextKey cursor from page 1
 	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
 		Address:    addr.String(),
-		Pagination: &query.PageRequest{Offset: 2, Limit: 2},
+		Pagination: &query.PageRequest{Key: resp.Pagination.NextKey, Limit: 2},
 	})
 	s.NoError(err)
 	s.Len(resp.TimestampNonces, 2)
 	s.NotNil(resp.Pagination)
 	s.NotEmpty(resp.Pagination.NextKey)
 
-	// Page 3: offset 4, limit 2 (only 1 remaining)
+	// Page 3: use NextKey cursor from page 2 (only 1 remaining)
 	resp, err = q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
 		Address:    addr.String(),
-		Pagination: &query.PageRequest{Offset: 4, Limit: 2},
+		Pagination: &query.PageRequest{Key: resp.Pagination.NextKey, Limit: 2},
 	})
 	s.NoError(err)
 	s.Len(resp.TimestampNonces, 1)

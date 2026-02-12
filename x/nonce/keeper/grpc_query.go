@@ -50,51 +50,49 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 
 	// Determine page limit (default 100, cap at 1000).
 	limit := uint64(100)
-	var offset uint64
-	if req.Pagination != nil {
-		if req.Pagination.Limit > 0 {
-			limit = req.Pagination.Limit
-		}
-		offset = req.Pagination.Offset
+	if req.Pagination != nil && req.Pagination.Limit > 0 {
+		limit = req.Pagination.Limit
 	}
 	if limit > 1000 {
 		limit = 1000
 	}
 
-	iter, err := store.Iterator(prefix, nil)
+	// Resume from NextKey if provided, otherwise start from prefix.
+	start := prefix
+	if req.Pagination != nil && len(req.Pagination.Key) > 0 {
+		start = req.Pagination.Key
+	}
+
+	iter, err := store.Iterator(start, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer iter.Close()
 
+	// Cap total keys scanned to prevent DoS (address is key suffix, so
+	// filtering requires a full scan across all timestamps).
+	const maxScan = 50_000
 	var nonces []uint64
-	var matched uint64
-	for ; iter.Valid(); iter.Next() {
+	var scanned uint64
+	for ; iter.Valid() && scanned < maxScan; iter.Next() {
 		key := iter.Key()
 		if len(key) < len(prefix) || key[0] != prefix[0] {
 			break
 		}
+		scanned++
 		tsUs, keyAddr := types.ParseNonceKey(key)
 		if !bytes.Equal(keyAddr, addrBytes) {
 			continue
 		}
-		// Skip entries before the offset.
-		if matched < offset {
-			matched++
-			continue
-		}
 		if uint64(len(nonces)) >= limit {
-			// There are more results; build a next key.
 			return &types.QueryNoncesByAddressResponse{
 				TimestampNonces: nonces,
 				Pagination: &query.PageResponse{
 					NextKey: key,
-					Total:   0, // total unknown without full scan
 				},
 			}, nil
 		}
 		nonces = append(nonces, tsUs)
-		matched++
 	}
 
 	return &types.QueryNoncesByAddressResponse{

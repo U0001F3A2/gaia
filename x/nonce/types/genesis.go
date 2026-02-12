@@ -1,6 +1,10 @@
 package types
 
-import "fmt"
+import (
+	"fmt"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
+)
 
 func DefaultGenesisState() *GenesisState {
 	return &GenesisState{
@@ -17,6 +21,9 @@ func ValidateGenesis(gs *GenesisState) error {
 	for _, entry := range gs.NonceEntries {
 		if entry.Address == "" {
 			return fmt.Errorf("nonce entry has empty address")
+		}
+		if _, err := sdk.AccAddressFromBech32(entry.Address); err != nil {
+			return fmt.Errorf("invalid nonce entry address %q: %w", entry.Address, err)
 		}
 		if entry.TimestampUs == 0 {
 			return fmt.Errorf("nonce entry has zero timestamp")
