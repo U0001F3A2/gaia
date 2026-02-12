@@ -1,0 +1,108 @@
+# 4-node validator benchmark: tests nonce throughput across gossip + consensus.
+# Init container generates all 4 validator configs, then each node starts independently.
+
+services:
+  init:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["/bin/bash", "/scripts/init_multinode.sh"]
+    volumes:
+      - node0-data:/nodes/node0/gaiad
+      - node1-data:/nodes/node1/gaiad
+      - node2-data:/nodes/node2/gaiad
+      - node3-data:/nodes/node3/gaiad
+      - ./scripts:/scripts:ro
+
+  node0:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["gaiad", "start", "--home", "/root/.gaia"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:26657/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - node0-data:/root/.gaia
+
+  node1:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["gaiad", "start", "--home", "/root/.gaia"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:26657/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - node1-data:/root/.gaia
+
+  node2:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["gaiad", "start", "--home", "/root/.gaia"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:26657/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - node2-data:/root/.gaia
+
+  node3:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["gaiad", "start", "--home", "/root/.gaia"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:26657/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - node3-data:/root/.gaia
+
+  spammer:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["/bin/bash", "/scripts/wait_for_node.sh", "node0:26657", "/bin/bash", "/benchmark/run_benchmark.sh"]
+    depends_on:
+      node0:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+    volumes:
+      - node0-data:/root/.gaia
+      - ./scripts:/scripts:ro
+      - ./benchmark:/benchmark:ro
+      - ./benchmark/results:/tmp/benchmark-results
+    environment:
+      - GRPC_ENDPOINTS=node0:9090,node1:9090,node2:9090,node3:9090
+      - GAIA_HOME=/root/.gaia
+
+volumes:
+  node0-data:
+  node1-data:
+  node2-data:
+  node3-data:
