@@ -221,6 +221,79 @@ func TestSigVerify_TimestampNonce(t *testing.T) {
 	require.True(t, has, "timestamp nonce should be consumed")
 }
 
+func TestSigVerify_TimestampNonce_RealSignature(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct := s.createAccount(t, 1000)
+
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// Real signature (simulate=false): proves crypto verification works with timestamp nonces
+	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
+
+	svd := nonceante.NewSigVerificationDecorator(
+		s.accountKeeper,
+		s.encCfg.TxConfig.SignModeHandler(),
+		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+	)
+	handler := sdk.ChainAnteDecorators(svd)
+
+	ctx := s.ctx.WithIsSigverifyTx(true)
+	_, err := handler(ctx, testTx, false) // simulate=false: real crypto verification
+	require.NoError(t, err)
+
+	// Verify nonce was consumed
+	addr := sdk.AccAddress(acct.priv.PubKey().Address())
+	has, err := s.nonceKeeper.HasNonce(s.ctx, addr, blockTimeUs)
+	require.NoError(t, err)
+	require.True(t, has, "timestamp nonce should be consumed")
+}
+
+func TestSigVerify_ExactCutoffBoundary(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct := s.createAccount(t, 1000)
+
+	// Sequence = exactly 2^40: should route to timestamp path
+	cutoff := noncetypes.DefaultTimestampNonceCutoff // 1 << 40
+
+	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{cutoff}, "test-chain")
+
+	svd := nonceante.NewSigVerificationDecorator(
+		s.accountKeeper,
+		s.encCfg.TxConfig.SignModeHandler(),
+		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+	)
+	handler := sdk.ChainAnteDecorators(svd)
+
+	// 2^40 as a timestamp = Jan 2005, well outside the ±5min window around 2025
+	// Should route to timestamp path and fail with ErrNonceExpired
+	_, err := handler(s.ctx, testTx, true)
+	require.ErrorIs(t, err, noncetypes.ErrNonceExpired,
+		"sequence at exact cutoff (2^40) should route to timestamp path and be rejected as expired")
+}
+
+func TestSigVerify_BelowCutoff_Sequential(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct := s.createAccount(t, 1000)
+
+	// Sequence = 2^40 - 1: should route to sequential path
+	belowCutoff := noncetypes.DefaultTimestampNonceCutoff - 1
+
+	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{belowCutoff}, "test-chain")
+
+	svd := nonceante.NewSigVerificationDecorator(
+		s.accountKeeper,
+		s.encCfg.TxConfig.SignModeHandler(),
+		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+	)
+	handler := sdk.ChainAnteDecorators(svd)
+
+	// Account sequence is 0, tx sequence is 2^40-1: should fail with sequence mismatch (sequential path)
+	_, err := handler(s.ctx, testTx, true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "account sequence mismatch",
+		"sequence just below cutoff should route to sequential path")
+}
+
 func TestSigVerify_TimestampNonce_Duplicate(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
