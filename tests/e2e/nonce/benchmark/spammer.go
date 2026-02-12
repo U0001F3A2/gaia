@@ -588,6 +588,7 @@ func main() {
 
 	// Per-block aggregation: height -> count of our txs
 	blockTxCounts := make(map[int64]int)
+	var lastConfTime time.Time // latest confirmation timestamp across all txs
 
 	for i := range results {
 		r := &results[i]
@@ -607,6 +608,9 @@ func main() {
 				inclusionLats = append(inclusionLats, r.InclusionLatNs)
 				blockTxCounts[conf.height]++
 				confirmed++
+				if conf.timestamp.After(lastConfTime) {
+					lastConfTime = conf.timestamp
+				}
 			}
 		} else {
 			failed++
@@ -651,15 +655,9 @@ func main() {
 	}
 
 	confirmedTPS := float64(0)
-	if len(inclusionLats) > 0 && broadcastElapsed.Seconds() > 0 {
-		// Use total wall-clock time from first broadcast to last confirmation
-		maxIncLat := int64(0)
-		for _, l := range inclusionLats {
-			if l > maxIncLat {
-				maxIncLat = l
-			}
-		}
-		totalTime := broadcastElapsed + time.Duration(maxIncLat-broadcastElapsed.Nanoseconds())
+	if confirmed > 0 && !lastConfTime.IsZero() {
+		// Wall-clock span from first broadcast to last confirmation
+		totalTime := lastConfTime.Sub(broadcastStart)
 		if totalTime.Seconds() > 0 {
 			confirmedTPS = float64(confirmed) / totalTime.Seconds()
 		}
