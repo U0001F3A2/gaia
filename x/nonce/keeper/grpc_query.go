@@ -5,6 +5,8 @@ import (
 	"context"
 
 	"github.com/cosmos/cosmos-sdk/types/query"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
@@ -27,6 +29,9 @@ func (q Querier) Params(ctx context.Context, _ *types.QueryParamsRequest) (*type
 }
 
 func (q Querier) HasNonce(ctx context.Context, req *types.QueryHasNonceRequest) (*types.QueryHasNonceResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "empty request")
+	}
 	addr, err := sdk.AccAddressFromBech32(req.Address)
 	if err != nil {
 		return nil, err
@@ -39,6 +44,9 @@ func (q Querier) HasNonce(ctx context.Context, req *types.QueryHasNonceRequest) 
 }
 
 func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAddressRequest) (*types.QueryNoncesByAddressResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "empty request")
+	}
 	addr, err := sdk.AccAddressFromBech32(req.Address)
 	if err != nil {
 		return nil, err

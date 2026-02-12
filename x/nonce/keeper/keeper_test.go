@@ -433,8 +433,7 @@ func (s *KeeperTestSuite) TestValidateTimestampNonce_UpperBoundOverflow() {
 
 	// upperBound overflows -- should return an error rather than silently wrapping.
 	err := s.keeper.ValidateAndConsumeTimestampNonce(farFutureCtx, addr, blockTimeUs)
-	s.Error(err, "overflow should return error")
-	s.Contains(err.Error(), "future window overflow")
+	s.ErrorIs(err, types.ErrNonceOverflow)
 }
 
 // --- Edge Case: Future boundary exactness ---

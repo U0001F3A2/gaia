@@ -2,8 +2,8 @@ package keeper
 
 import (
 	"context"
-	"fmt"
 
+	errorsmod "cosmossdk.io/errors"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/cosmos/gaia/v26/x/nonce/types"
@@ -58,7 +58,7 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 
 	upperBound := blockTimeUs + params.FutureWindowUs
 	if upperBound < blockTimeUs {
-		return fmt.Errorf("future window overflow: blockTime=%d + futureWindow=%d", blockTimeUs, params.FutureWindowUs)
+		return errorsmod.Wrapf(types.ErrNonceOverflow, "blockTime=%d + futureWindow=%d", blockTimeUs, params.FutureWindowUs)
 	}
 
 	if nonceUs < lowerBound {

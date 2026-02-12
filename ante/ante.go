@@ -70,6 +70,9 @@ func NewAnteHandler(opts HandlerOptions) (sdk.AnteHandler, error) {
 	if opts.StakingKeeper == nil {
 		return nil, errorsmod.Wrap(gaiaerrors.ErrNotFound, "staking param store is required for AnteHandler")
 	}
+	if opts.NonceKeeper == nil {
+		return nil, errorsmod.Wrap(gaiaerrors.ErrLogic, "Nonce keeper is required for AnteHandler")
+	}
 
 	sigGasConsumer := opts.SigGasConsumer
 	if sigGasConsumer == nil {
