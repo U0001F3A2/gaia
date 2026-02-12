@@ -187,8 +187,6 @@ jq --arg amt "10000000" --arg valaddr "$VALIDATOR" --rawfile addrs "$ADDR_FILE" 
     [.app_state.bank.balances[].coins[]] | group_by(.denom) |
     map({"denom": .[0].denom, "amount": ([.[].amount | tonumber] | add | tostring)})
   ) |
-  # Block gas limit: ~500 txs/block (each bank send ~100k gas)
-  .consensus.params.block.max_gas = "50000000" |
   # Neuter feemarket
   .app_state.feemarket.params.min_base_gas_price = "0.001000000000000000" |
   .app_state.feemarket.params.max_block_utilization = "300000000000" |
