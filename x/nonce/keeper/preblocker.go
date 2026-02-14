@@ -45,22 +45,29 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 	totalPruned := 0
 
 	for {
-		iter, err := store.Iterator(start, end)
+		// Use closure to ensure iterator cleanup with defer
+		batchEmpty, err := func() (bool, error) {
+			iter, err := store.Iterator(start, end)
+			if err != nil {
+				return true, err
+			}
+			defer iter.Close()
+
+			batch = batch[:0]
+			for ; iter.Valid() && len(batch) < batchSize; iter.Next() {
+				// Copy key since iterator keys may be reused after Close.
+				key := iter.Key()
+				keyCopy := make([]byte, len(key))
+				copy(keyCopy, key)
+				batch = append(batch, keyCopy)
+			}
+			return len(batch) == 0, nil
+		}()
+
 		if err != nil {
 			return err
 		}
-
-		batch = batch[:0]
-		for ; iter.Valid() && len(batch) < batchSize; iter.Next() {
-			// Copy key since iterator keys may be reused after Close.
-			key := iter.Key()
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			batch = append(batch, keyCopy)
-		}
-		iter.Close()
-
-		if len(batch) == 0 {
+		if batchEmpty {
 			break
 		}
 

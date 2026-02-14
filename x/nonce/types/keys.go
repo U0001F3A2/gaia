@@ -43,7 +43,12 @@ func NonceIteratorPrefix() []byte {
 }
 
 // ParseNonceKey extracts (timestampUs, addr) from a full nonce key.
+// Returns zero values if key is malformed (< 9 bytes).
 func ParseNonceKey(key []byte) (timestampUs uint64, addr []byte) {
+	if len(key) < 9 {
+		// Return zero values for malformed keys - caller should validate
+		return 0, nil
+	}
 	timestampUs = binary.BigEndian.Uint64(key[1:9])
 	addr = key[9:]
 	return
