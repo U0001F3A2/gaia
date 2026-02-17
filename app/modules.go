@@ -127,7 +127,7 @@ func appModules(
 		tendermint.NewAppModule(tmLightClientModule),
 		liquid.NewAppModule(appCodec, app.LiquidKeeper, app.AccountKeeper, app.BankKeeper, app.StakingKeeper),
 		tokenfactory.NewAppModule(app.TokenFactoryKeeper, app.AccountKeeper, app.BankKeeper, app.GetSubspace(tokenfactorytypes.ModuleName)),
-		nonce.NewAppModule(appCodec, app.NonceKeeper),
+		nonce.NewAppModule(appCodec, app.NonceKeeper, app.AccountKeeper, app.BankKeeper),
 	}
 }
 
@@ -171,6 +171,7 @@ func simulationModules(
 		ibc.NewAppModule(app.IBCKeeper),
 		app.TransferModule,
 		app.ICAModule,
+		nonce.NewAppModule(appCodec, app.NonceKeeper, app.AccountKeeper, app.BankKeeper),
 	}
 }
 
