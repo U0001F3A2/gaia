@@ -551,6 +551,16 @@ func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Paginated() {
 	s.Len(resp.TimestampNonces, 5)
 }
 
+// --- ExportGenesis edge cases ---
+
+func (s *KeeperTestSuite) TestExportGenesisEmptyState() {
+	// ExportGenesis on a fresh store should return empty entries, not panic.
+	gs := s.keeper.ExportGenesis(s.ctx)
+	s.NotNil(gs)
+	s.Empty(gs.NonceEntries)
+	s.Equal(types.DefaultParams(), gs.Params)
+}
+
 // --- MsgUpdateParams governance test ---
 
 func (s *KeeperTestSuite) TestMsgUpdateParams() {
