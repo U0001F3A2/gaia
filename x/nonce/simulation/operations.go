@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	OpWeightMsgTimestampNonceSend    = "op_weight_msg_timestamp_nonce_send"
-	DefaultWeightTimestampNonceSend  = 30
+	OpWeightMsgTimestampNonceSend         = "op_weight_msg_timestamp_nonce_send"
+	DefaultWeightTimestampNonceSend       = 30
+	OpWeightMsgTimestampNonceDuplicate    = "op_weight_msg_timestamp_nonce_duplicate"
+	DefaultWeightTimestampNonceDuplicate  = 5
 )
 
 // WeightedOperations returns simulation operations for the x/nonce module.
@@ -36,13 +38,19 @@ func WeightedOperations(
 	bk bankkeeper.Keeper,
 	nk *keeper.Keeper,
 ) []simtypes.WeightedOperation {
-	var weight int
-	appParams.GetOrGenerate(OpWeightMsgTimestampNonceSend, &weight, nil, func(_ *rand.Rand) {
-		weight = DefaultWeightTimestampNonceSend
+	var sendWeight int
+	appParams.GetOrGenerate(OpWeightMsgTimestampNonceSend, &sendWeight, nil, func(_ *rand.Rand) {
+		sendWeight = DefaultWeightTimestampNonceSend
+	})
+
+	var dupWeight int
+	appParams.GetOrGenerate(OpWeightMsgTimestampNonceDuplicate, &dupWeight, nil, func(_ *rand.Rand) {
+		dupWeight = DefaultWeightTimestampNonceDuplicate
 	})
 
 	return []simtypes.WeightedOperation{
-		xsim.NewWeightedOperation(weight, SimulateTimestampNonceSend(txGen, ak, bk, nk)),
+		xsim.NewWeightedOperation(sendWeight, SimulateTimestampNonceSend(txGen, ak, bk, nk)),
+		xsim.NewWeightedOperation(dupWeight, SimulateTimestampNonceDuplicate(txGen, ak, bk, nk)),
 	}
 }
 
@@ -132,6 +140,80 @@ func SimulateTimestampNonceSend(
 		}
 
 		return simtypes.NewOperationMsg(msg, true, ""), nil, nil
+	}
+}
+
+// SimulateTimestampNonceDuplicate creates two transactions with the same
+// timestamp nonce from the same account. The first should succeed and the
+// second should fail with ErrNonceDuplicate. This is a negative test that
+// verifies the duplicate-detection invariant holds during simulation.
+func SimulateTimestampNonceDuplicate(
+	txGen client.TxConfig,
+	ak authkeeper.AccountKeeper,
+	bk bankkeeper.Keeper,
+	nk *keeper.Keeper,
+) simtypes.Operation {
+	return func(
+		r *rand.Rand, app *baseapp.BaseApp, ctx sdk.Context,
+		accs []simtypes.Account, chainID string,
+	) (simtypes.OperationMsg, []simtypes.FutureOperation, error) {
+		msgType := "timestamp_nonce_duplicate"
+
+		from, _ := simtypes.RandomAcc(r, accs)
+		to, _ := simtypes.RandomAcc(r, accs)
+		for from.PubKey.Equals(to.PubKey) {
+			to, _ = simtypes.RandomAcc(r, accs)
+		}
+
+		fromAcc := ak.GetAccount(ctx, from.Address)
+		if fromAcc == nil {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "account not found"), nil, nil
+		}
+
+		spendable := bk.SpendableCoins(ctx, from.Address)
+		if spendable.Empty() {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "no spendable coins"), nil, nil
+		}
+
+		sendCoin := sdk.NewInt64Coin(spendable[0].Denom, 1)
+		if !spendable.IsAllGTE(sdk.NewCoins(sendCoin)) {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "insufficient balance"), nil, nil
+		}
+
+		blockTimeUs := uint64(ctx.BlockTime().UnixMicro())
+
+		buildTx := func(nonce uint64) (sdk.Tx, error) {
+			msg := banktypes.NewMsgSend(from.Address, to.Address, sdk.NewCoins(sendCoin))
+			return simtestutil.GenSignedMockTx(
+				r, txGen, []sdk.Msg{msg}, sdk.Coins{},
+				simtestutil.DefaultGenTxGas, chainID,
+				[]uint64{fromAcc.GetAccountNumber()},
+				[]uint64{nonce},
+				from.PrivKey,
+			)
+		}
+
+		// first tx: should succeed
+		tx1, err := buildTx(blockTimeUs)
+		if err != nil {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "tx1 build failed"), nil, err
+		}
+		_, _, err = app.SimTxFinalizeBlock(txGen.TxEncoder(), tx1)
+		if err != nil {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "tx1 failed: "+err.Error()), nil, nil
+		}
+
+		// second tx with same nonce: should fail with duplicate
+		tx2, err := buildTx(blockTimeUs)
+		if err != nil {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "tx2 build failed"), nil, err
+		}
+		_, _, err = app.SimTxFinalizeBlock(txGen.TxEncoder(), tx2)
+		if err == nil {
+			return simtypes.NoOpMsg(types.ModuleName, msgType, "BUG: duplicate nonce accepted"), nil, nil
+		}
+
+		return simtypes.NewOperationMsgBasic(types.ModuleName, msgType, "duplicate correctly rejected", true, nil), nil, nil
 	}
 }
 
