@@ -40,7 +40,9 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 	end := types.BuildNoncePrefixUpTo(cutoffUs)
 
 	// Delete in fixed-size batches to bound peak memory under high throughput.
-	const batchSize = 256
+	// Each key is ~30 bytes (prefix + timestamp + address), so 16384 keys ≈ 480 KB.
+	// Sized to handle ~6000 nonces/block (1000 TPS * 6s block) in a single pass.
+	const batchSize = 16_384
 	batch := make([][]byte, 0, batchSize)
 	totalPruned := 0
 

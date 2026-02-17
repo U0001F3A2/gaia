@@ -474,15 +474,16 @@ func (s *KeeperTestSuite) TestValidateAndConsumeWithParams() {
 	s.ErrorIs(err, types.ErrNonceDuplicate)
 }
 
-// --- Prune: batched deletion works for > 256 entries ---
+// --- Prune: large number of expired entries ---
 
 func (s *KeeperTestSuite) TestPruneLargeBatch() {
 	addr := s.addrs[0]
 	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
 
-	// Create 300 expired nonces (> batch size of 256).
+	// Create 1100 expired nonces to verify bulk pruning works.
+	const n = 1100
 	expiredBase := blockTimeUs - types.DefaultPastWindowUs - 1_000_000
-	for i := uint64(0); i < 300; i++ {
+	for i := uint64(0); i < n; i++ {
 		s.NoError(s.keeper.SetNonce(s.ctx, addr, expiredBase+i))
 	}
 
@@ -492,7 +493,7 @@ func (s *KeeperTestSuite) TestPruneLargeBatch() {
 	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
 
 	// All expired should be gone
-	for i := uint64(0); i < 300; i++ {
+	for i := uint64(0); i < n; i++ {
 		has, _ := s.keeper.HasNonce(s.ctx, addr, expiredBase+i)
 		s.False(has, "expired nonce %d should be pruned", i)
 	}
