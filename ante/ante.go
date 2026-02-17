@@ -25,6 +25,7 @@ import (
 
 	gaiaerrors "github.com/cosmos/gaia/v26/types/errors"
 	nonceante "github.com/cosmos/gaia/v26/x/nonce/ante"
+	noncekeeper "github.com/cosmos/gaia/v26/x/nonce/keeper"
 )
 
 // UseFeeMarketDecorator to make the integration testing easier: we can switch off its ante and post decorators with this flag
@@ -47,7 +48,7 @@ type HandlerOptions struct {
 	TxFeeChecker          ante.TxFeeChecker
 	TXCounterStoreService corestoretypes.KVStoreService
 	WasmConfig            *wasmtypes.NodeConfig
-	NonceKeeper           nonceante.NonceKeeper
+	NonceKeeper           *noncekeeper.Keeper
 }
 
 func NewAnteHandler(opts HandlerOptions) (sdk.AnteHandler, error) {

@@ -72,7 +72,6 @@ import (
 	"github.com/cosmos/gaia/v26/app/keepers"
 	"github.com/cosmos/gaia/v26/app/upgrades"
 	v260 "github.com/cosmos/gaia/v26/app/upgrades/v26_0_0"
-	nonceante "github.com/cosmos/gaia/v26/x/nonce/ante"
 	noncetypes "github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
@@ -294,7 +293,7 @@ func NewGaiaApp(
 			TxFeeChecker: func(ctx sdk.Context, tx sdk.Tx) (sdk.Coins, int64, error) {
 				return minTxFeesChecker(ctx, tx, *app.FeeMarketKeeper)
 			},
-			NonceKeeper: nonceante.NonceKeeperAdapter{K: app.NonceKeeper},
+			NonceKeeper: app.NonceKeeper,
 		},
 	)
 	if err != nil {

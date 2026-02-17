@@ -165,7 +165,7 @@ func TestSigVerify_SequentialNonce(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -184,7 +184,7 @@ func TestSigVerify_SequentialNonce_WrongSequence(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -207,7 +207,7 @@ func TestSigVerify_TimestampNonce(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -233,7 +233,7 @@ func TestSigVerify_TimestampNonce_RealSignature(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -260,7 +260,7 @@ func TestSigVerify_ExactCutoffBoundary(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -283,7 +283,7 @@ func TestSigVerify_BelowCutoff_Sequential(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -303,7 +303,7 @@ func TestSigVerify_TimestampNonce_Duplicate(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -331,7 +331,7 @@ func TestSigVerify_TimestampNonce_Expired(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -359,7 +359,7 @@ func TestSigVerify_MultiSig_SameTimestamp(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -385,7 +385,7 @@ func TestSigVerify_MultiSig_DifferentTimestamps(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -462,7 +462,7 @@ func TestFullChain_SequentialTx(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
 	handler := sdk.ChainAnteDecorators(svd, isd)
@@ -486,7 +486,7 @@ func TestFullChain_TimestampTx(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
 	handler := sdk.ChainAnteDecorators(svd, isd)
@@ -524,7 +524,7 @@ func TestSigVerify_MixedMultiSig_SequentialAndTimestamp(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
 	handler := sdk.ChainAnteDecorators(svd, isd)
@@ -561,7 +561,7 @@ func TestSigVerify_TimestampNonce_ExactFutureBoundary(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
@@ -581,7 +581,7 @@ func TestSigVerify_TimestampNonce_PastFutureBoundary(t *testing.T) {
 	svd := nonceante.NewSigVerificationDecorator(
 		s.accountKeeper,
 		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
+		s.nonceKeeper,
 	)
 	handler := sdk.ChainAnteDecorators(svd)
 
