@@ -20,7 +20,8 @@ message Params {
   uint64 future_window_us = 2;
 
   // timestamp_nonce_cutoff is the sequence value threshold. Values >= this are
-  // treated as timestamp nonces (microseconds). Default: 2^40.
+  // treated as timestamp nonces (microseconds). Fixed at 2^40; stored for
+  // serialization but not governance-configurable (protocol constant).
   uint64 timestamp_nonce_cutoff = 3;
 }
 

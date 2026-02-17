@@ -22,7 +22,7 @@ func RandomizedGenState(simState *module.SimulationState) {
 	params := types.Params{
 		PastWindowUs:         pastWindowUs,
 		FutureWindowUs:       futureWindowUs,
-		TimestampNonceCutoff: types.DefaultTimestampNonceCutoff,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
 
 	genesis := types.GenesisState{
@@ -45,6 +45,6 @@ func RandomParams(r *rand.Rand) types.Params {
 	return types.Params{
 		PastWindowUs:         uint64(pastMinutes) * 60 * 1_000_000,
 		FutureWindowUs:       uint64(futureMinutes) * 60 * 1_000_000,
-		TimestampNonceCutoff: types.DefaultTimestampNonceCutoff,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
 }

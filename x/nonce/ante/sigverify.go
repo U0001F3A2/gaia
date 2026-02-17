@@ -127,7 +127,7 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 				return ctx, err
 			}
 
-			if sig.Sequence >= params.TimestampNonceCutoff {
+			if sig.Sequence >= types.TimestampNonceCutoff {
 				if err := svd.nk.ValidateAndConsumeWithParams(ctx, signers[i], sig.Sequence, params); err != nil {
 					return ctx, err
 				}

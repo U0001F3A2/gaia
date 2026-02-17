@@ -94,7 +94,7 @@ func SimulateTimestampNonceSend(
 
 		// ensure nonce is above the cutoff (it always will be for real timestamps,
 		// but guard against edge cases with very early block times in simulation)
-		if nonce < params.TimestampNonceCutoff {
+		if nonce < types.TimestampNonceCutoff {
 			nonce = blockTimeUs
 		}
 

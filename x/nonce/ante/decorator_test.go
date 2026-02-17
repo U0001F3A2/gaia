@@ -253,7 +253,7 @@ func TestSigVerify_ExactCutoffBoundary(t *testing.T) {
 	acct := s.createAccount(t, 1000)
 
 	// Sequence = exactly 2^40: should route to timestamp path
-	cutoff := noncetypes.DefaultTimestampNonceCutoff // 1 << 40
+	cutoff := noncetypes.TimestampNonceCutoff // 1 << 40
 
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{cutoff}, "test-chain")
 
@@ -276,7 +276,7 @@ func TestSigVerify_BelowCutoff_Sequential(t *testing.T) {
 	acct := s.createAccount(t, 1000)
 
 	// Sequence = 2^40 - 1: should route to sequential path
-	belowCutoff := noncetypes.DefaultTimestampNonceCutoff - 1
+	belowCutoff := noncetypes.TimestampNonceCutoff - 1
 
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{belowCutoff}, "test-chain")
 

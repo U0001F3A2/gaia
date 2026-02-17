@@ -76,12 +76,12 @@ func TestTimestampSignerContext(t *testing.T) {
 
 func TestNonceCutoffThreshold(t *testing.T) {
 	// Verify that the cutoff is 2^40
-	require.Equal(t, uint64(1<<40), types.DefaultTimestampNonceCutoff)
+	require.Equal(t, uint64(1<<40), types.TimestampNonceCutoff)
 
 	// A typical account sequence (e.g., 42) should be below the cutoff
-	require.True(t, uint64(42) < types.DefaultTimestampNonceCutoff)
+	require.True(t, uint64(42) < types.TimestampNonceCutoff)
 
 	// A microsecond timestamp (e.g., 2025-02-05) should be above the cutoff
 	ts := uint64(time.Date(2025, 2, 5, 0, 0, 0, 0, time.UTC).UnixMicro())
-	require.True(t, ts >= types.DefaultTimestampNonceCutoff)
+	require.True(t, ts >= types.TimestampNonceCutoff)
 }
