@@ -74,40 +74,52 @@ func (s *KeeperTestSuite) TestParamsRoundTrip() {
 
 func (s *KeeperTestSuite) TestValidateAndConsumeTimestampNonce() {
 	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-	addr := s.addrs[0]
 
-	// Success: nonce at block time
-	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
-	s.NoError(err)
+	s.Run("success at block time", func() {
+		addr := s.addrs[0]
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
+		s.NoError(err)
+	})
 
-	// Duplicate: same nonce should fail
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
-	s.ErrorIs(err, types.ErrNonceDuplicate)
+	s.Run("duplicate nonce rejected", func() {
+		addr := s.addrs[0] // already consumed above
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
+		s.ErrorIs(err, types.ErrNonceDuplicate)
+	})
 
-	// Same timestamp, different address: should succeed
-	addr2 := s.addrs[1]
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr2, blockTimeUs)
-	s.NoError(err)
+	s.Run("same timestamp different address succeeds", func() {
+		addr2 := s.addrs[1]
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr2, blockTimeUs)
+		s.NoError(err)
+	})
 
-	// Expired: nonce too far in the past
-	expiredNonce := blockTimeUs - types.DefaultPastWindowUs - 1
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, expiredNonce)
-	s.ErrorIs(err, types.ErrNonceExpired)
+	s.Run("expired nonce rejected", func() {
+		addr := s.addrs[0]
+		expired := blockTimeUs - types.DefaultPastWindowUs - 1
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, expired)
+		s.ErrorIs(err, types.ErrNonceExpired)
+	})
 
-	// Future: nonce too far in the future
-	futureNonce := blockTimeUs + types.DefaultFutureWindowUs + 1
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, futureNonce)
-	s.ErrorIs(err, types.ErrNonceTooFarInFuture)
+	s.Run("future nonce rejected", func() {
+		addr := s.addrs[0]
+		future := blockTimeUs + types.DefaultFutureWindowUs + 1
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, future)
+		s.ErrorIs(err, types.ErrNonceTooFarInFuture)
+	})
 
-	// Edge: nonce at exact lower bound (should succeed)
-	lowerBound := blockTimeUs - types.DefaultPastWindowUs
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, lowerBound)
-	s.NoError(err)
+	s.Run("exact lower bound accepted", func() {
+		addr := s.addrs[0]
+		lowerBound := blockTimeUs - types.DefaultPastWindowUs
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, lowerBound)
+		s.NoError(err)
+	})
 
-	// Edge: nonce at exact upper bound (should succeed)
-	upperBound := blockTimeUs + types.DefaultFutureWindowUs
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, upperBound)
-	s.NoError(err)
+	s.Run("exact upper bound accepted", func() {
+		addr := s.addrs[0]
+		upperBound := blockTimeUs + types.DefaultFutureWindowUs
+		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, upperBound)
+		s.NoError(err)
+	})
 }
 
 func (s *KeeperTestSuite) TestPruneExpiredNonces() {
@@ -305,7 +317,7 @@ func (s *KeeperTestSuite) TestKeyOrderingIsTimestampFirst() {
 	// key1 < key2 (earlier timestamp sorts first)
 	s.True(string(key1) < string(key2))
 	// key2 and key3 share timestamp prefix, differ by address
-	s.Equal(key2[:9], key3[:9])
+	s.Equal(key2[:types.NonceKeyMinLen], key3[:types.NonceKeyMinLen])
 }
 
 // --- Prune Edge Cases ---
@@ -358,33 +370,70 @@ func (s *KeeperTestSuite) TestPruneEarlyChainUnderflow() {
 // --- ValidateGenesis Tests ---
 
 func (s *KeeperTestSuite) TestValidateGenesis() {
-	// Valid
-	gs := types.DefaultGenesisState()
-	s.NoError(types.ValidateGenesis(gs))
+	validAddr := s.addrs[0].String()
 
-	// Duplicate entry
-	gs.NonceEntries = []types.NonceEntry{
-		{TimestampUs: 100, Address: "cosmos1abc"},
-		{TimestampUs: 100, Address: "cosmos1abc"},
-	}
-	s.Error(types.ValidateGenesis(gs))
+	s.Run("valid default genesis", func() {
+		gs := types.DefaultGenesisState()
+		s.NoError(types.ValidateGenesis(gs))
+	})
 
-	// Empty address
-	gs.NonceEntries = []types.NonceEntry{
-		{TimestampUs: 100, Address: ""},
-	}
-	s.Error(types.ValidateGenesis(gs))
+	s.Run("valid genesis with entries", func() {
+		gs := types.DefaultGenesisState()
+		gs.NonceEntries = []types.NonceEntry{
+			{TimestampUs: 100, Address: validAddr},
+			{TimestampUs: 200, Address: validAddr},
+		}
+		s.NoError(types.ValidateGenesis(gs))
+	})
 
-	// Zero timestamp
-	gs.NonceEntries = []types.NonceEntry{
-		{TimestampUs: 0, Address: "cosmos1abc"},
-	}
-	s.Error(types.ValidateGenesis(gs))
+	s.Run("duplicate entry", func() {
+		gs := types.DefaultGenesisState()
+		gs.NonceEntries = []types.NonceEntry{
+			{TimestampUs: 100, Address: validAddr},
+			{TimestampUs: 100, Address: validAddr},
+		}
+		err := types.ValidateGenesis(gs)
+		s.Error(err)
+		s.Contains(err.Error(), "duplicate nonce entry")
+	})
 
-	// Invalid params: wrong cutoff
-	gs = types.DefaultGenesisState()
-	gs.Params.TimestampNonceCutoff = 42
-	s.Error(types.ValidateGenesis(gs))
+	s.Run("empty address", func() {
+		gs := types.DefaultGenesisState()
+		gs.NonceEntries = []types.NonceEntry{
+			{TimestampUs: 100, Address: ""},
+		}
+		err := types.ValidateGenesis(gs)
+		s.Error(err)
+		s.Contains(err.Error(), "empty address")
+	})
+
+	s.Run("invalid bech32 address", func() {
+		gs := types.DefaultGenesisState()
+		gs.NonceEntries = []types.NonceEntry{
+			{TimestampUs: 100, Address: "cosmos1invalid"},
+		}
+		err := types.ValidateGenesis(gs)
+		s.Error(err)
+		s.Contains(err.Error(), "invalid nonce entry address")
+	})
+
+	s.Run("zero timestamp", func() {
+		gs := types.DefaultGenesisState()
+		gs.NonceEntries = []types.NonceEntry{
+			{TimestampUs: 0, Address: validAddr},
+		}
+		err := types.ValidateGenesis(gs)
+		s.Error(err)
+		s.Contains(err.Error(), "zero timestamp")
+	})
+
+	s.Run("invalid params wrong cutoff", func() {
+		gs := types.DefaultGenesisState()
+		gs.Params.TimestampNonceCutoff = 42
+		err := types.ValidateGenesis(gs)
+		s.Error(err)
+		s.Contains(err.Error(), "protocol constant")
+	})
 }
 
 // --- Edge Case: Zero timestamp at genesis block ---
@@ -602,7 +651,7 @@ func (s *KeeperTestSuite) TestMsgUpdateParams() {
 	s.Error(err)
 	s.ErrorContains(err, "protocol constant")
 
-	// Invalid: window too large
+	// Invalid: past window too large
 	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
 		Authority: "cosmos1authority",
 		Params: types.Params{
@@ -613,4 +662,191 @@ func (s *KeeperTestSuite) TestMsgUpdateParams() {
 	})
 	s.Error(err)
 	s.ErrorContains(err, "exceeds max")
+
+	// Invalid: future window too large
+	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+		Authority: "cosmos1authority",
+		Params: types.Params{
+			PastWindowUs:         types.DefaultPastWindowUs,
+			FutureWindowUs:       types.MaxWindowUs + 1,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		},
+	})
+	s.Error(err)
+	s.ErrorContains(err, "exceeds max")
+}
+
+// --- H5: Params validation edge cases ---
+
+func (s *KeeperTestSuite) TestParamsValidate() {
+	tests := []struct {
+		name    string
+		params  types.Params
+		wantErr string
+	}{
+		{
+			name:   "valid defaults",
+			params: types.DefaultParams(),
+		},
+		{
+			name: "zero past window",
+			params: types.Params{
+				PastWindowUs:         0,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "past_window_us must be > 0",
+		},
+		{
+			name: "zero future window",
+			params: types.Params{
+				PastWindowUs:         types.DefaultPastWindowUs,
+				FutureWindowUs:       0,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "future_window_us must be > 0",
+		},
+		{
+			name: "past window exceeds max",
+			params: types.Params{
+				PastWindowUs:         types.MaxWindowUs + 1,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "exceeds max",
+		},
+		{
+			name: "future window exceeds max",
+			params: types.Params{
+				PastWindowUs:         types.DefaultPastWindowUs,
+				FutureWindowUs:       types.MaxWindowUs + 1,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "exceeds max",
+		},
+		{
+			name: "wrong cutoff",
+			params: types.Params{
+				PastWindowUs:         types.DefaultPastWindowUs,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: 42,
+			},
+			wantErr: "protocol constant",
+		},
+	}
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			err := tc.params.Validate()
+			if tc.wantErr == "" {
+				s.NoError(err)
+			} else {
+				s.Error(err)
+				s.Contains(err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// --- H4: MsgUpdateParams.ValidateBasic() ---
+
+func (s *KeeperTestSuite) TestMsgUpdateParamsValidateBasic() {
+	s.Run("valid message", func() {
+		msg := &types.MsgUpdateParams{
+			Authority: s.addrs[0].String(),
+			Params:    types.DefaultParams(),
+		}
+		s.NoError(msg.ValidateBasic())
+	})
+
+	s.Run("invalid bech32 authority", func() {
+		msg := &types.MsgUpdateParams{
+			Authority: "invalid-authority",
+			Params:    types.DefaultParams(),
+		}
+		s.Error(msg.ValidateBasic())
+	})
+
+	s.Run("invalid params via ValidateBasic", func() {
+		msg := &types.MsgUpdateParams{
+			Authority: s.addrs[0].String(),
+			Params: types.Params{
+				PastWindowUs:         0,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+		}
+		err := msg.ValidateBasic()
+		s.Error(err)
+		s.Contains(err.Error(), "past_window_us must be > 0")
+	})
+}
+
+// --- H7+M7: GRPC query edge cases ---
+
+func (s *KeeperTestSuite) TestGRPCQueryHasNonce_NilRequest() {
+	q := keeper.Querier{Keeper: s.keeper}
+	_, err := q.HasNonce(s.ctx, nil)
+	s.Error(err)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_NilRequest() {
+	q := keeper.Querier{Keeper: s.keeper}
+	_, err := q.NoncesByAddress(s.ctx, nil)
+	s.Error(err)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_InvalidAddress() {
+	q := keeper.Querier{Keeper: s.keeper}
+	_, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: "invalid-bech32",
+	})
+	s.Error(err)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_MaxScanCap() {
+	q := keeper.Querier{Keeper: s.keeper}
+
+	// Use addr0 as target, write nonces under a different address to force scanning.
+	// We write just over the typical page limit to verify scanning terminates.
+	addr0 := s.addrs[0]
+	addr1 := s.addrs[1]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// Write 5 nonces for addr1 (fills scan space) and 1 for addr0
+	for i := uint64(0); i < 5; i++ {
+		s.NoError(s.keeper.SetNonce(s.ctx, addr1, blockTimeUs+i))
+	}
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, blockTimeUs))
+
+	resp, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address:    addr0.String(),
+		Pagination: &query.PageRequest{Limit: 100},
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 1)
+	s.Equal(blockTimeUs, resp.TimestampNonces[0])
+}
+
+// --- L5: NoncesByAddress ordering verification ---
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Ordering() {
+	q := keeper.Querier{Keeper: s.keeper}
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Insert nonces out of order
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs+2000))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs+1000))
+
+	resp, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: addr.String(),
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 3)
+
+	// Keys are (prefix + timestamp_be + addr), so iteration should yield ascending timestamps
+	s.Equal(blockTimeUs, resp.TimestampNonces[0], "first nonce should be smallest timestamp")
+	s.Equal(blockTimeUs+1000, resp.TimestampNonces[1])
+	s.Equal(blockTimeUs+2000, resp.TimestampNonces[2], "last nonce should be largest timestamp")
 }
