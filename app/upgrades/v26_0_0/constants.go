@@ -6,6 +6,7 @@ import (
 	storetypes "cosmossdk.io/store/types"
 
 	"github.com/cosmos/gaia/v26/app/upgrades"
+	noncetypes "github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
 const (
@@ -17,6 +18,6 @@ var Upgrade = upgrades.Upgrade{
 	UpgradeName:          UpgradeName,
 	CreateUpgradeHandler: CreateUpgradeHandler,
 	StoreUpgrades: storetypes.StoreUpgrades{
-		Added: []string{tokenfactorytypes.ModuleName},
+		Added: []string{tokenfactorytypes.ModuleName, noncetypes.ModuleName},
 	},
 }
