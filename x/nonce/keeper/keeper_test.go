@@ -803,7 +803,7 @@ func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_InvalidAddress() {
 	s.Error(err)
 }
 
-func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_MaxScanCap() {
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_FiltersByAddress() {
 	q := keeper.Querier{Keeper: s.keeper}
 
 	// Use addr0 as target, write nonces under a different address to force scanning.

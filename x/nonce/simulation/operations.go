@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"fmt"
 	"math/rand"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
@@ -210,7 +211,7 @@ func SimulateTimestampNonceDuplicate(
 		}
 		_, _, err = app.SimTxFinalizeBlock(txGen.TxEncoder(), tx2)
 		if err == nil {
-			return simtypes.NoOpMsg(types.ModuleName, msgType, "BUG: duplicate nonce accepted"), nil, nil
+			return simtypes.OperationMsg{}, nil, fmt.Errorf("INVARIANT VIOLATION: duplicate timestamp nonce accepted for %s at nonce %d", from.Address, blockTimeUs)
 		}
 
 		return simtypes.NewOperationMsgBasic(types.ModuleName, msgType, "duplicate correctly rejected", true, nil), nil, nil
