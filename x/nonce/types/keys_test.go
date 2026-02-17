@@ -60,11 +60,12 @@ func TestParseNonceKey_Malformed(t *testing.T) {
 }
 
 func TestParseNonceKey_MinimumValidKey(t *testing.T) {
-	// Exactly 9 bytes: prefix + 8-byte timestamp, no address bytes.
+	// Exactly NonceKeyMinLen bytes: prefix + 8-byte timestamp, no address bytes.
 	// This is valid but yields an empty (not nil) address slice.
-	key := make([]byte, 9)
-	key[0] = types.NonceKeyPrefix[0]
-	binary.BigEndian.PutUint64(key[1:9], 42)
+	pfx := len(types.NonceKeyPrefix)
+	key := make([]byte, types.NonceKeyMinLen)
+	copy(key, types.NonceKeyPrefix)
+	binary.BigEndian.PutUint64(key[pfx:pfx+8], 42)
 
 	ts, addr := types.ParseNonceKey(key)
 	require.Equal(t, uint64(42), ts)
@@ -85,7 +86,8 @@ func TestParseNonceKey_RoundTrip(t *testing.T) {
 func TestBuildNoncePrefixUpTo(t *testing.T) {
 	cutoff := uint64(999)
 	key := types.BuildNoncePrefixUpTo(cutoff)
-	require.Len(t, key, 9)
-	require.Equal(t, types.NonceKeyPrefix[0], key[0])
-	require.Equal(t, cutoff, binary.BigEndian.Uint64(key[1:9]))
+	require.Len(t, key, types.NonceKeyMinLen)
+	pfx := len(types.NonceKeyPrefix)
+	require.Equal(t, types.NonceKeyPrefix, key[:pfx])
+	require.Equal(t, cutoff, binary.BigEndian.Uint64(key[pfx:pfx+8]))
 }

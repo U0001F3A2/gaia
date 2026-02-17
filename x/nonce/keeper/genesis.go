@@ -43,8 +43,7 @@ func (k Keeper) ExportGenesis(ctx sdk.Context) *types.GenesisState {
 	prefix := types.NonceIteratorPrefix()
 	for ; iter.Valid(); iter.Next() {
 		key := iter.Key()
-		// Only process keys with our prefix and minimum 9 bytes
-		if len(key) < 9 || key[0] != prefix[0] {
+		if len(key) < types.NonceKeyMinLen || key[0] != prefix[0] {
 			break
 		}
 		timestampUs, addrBytes := types.ParseNonceKey(key)
