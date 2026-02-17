@@ -40,27 +40,36 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 	end := types.BuildNoncePrefixUpTo(cutoffUs)
 
 	// Delete in fixed-size batches to bound peak memory under high throughput.
-	const batchSize = 256
+	// Each key is ~30 bytes (prefix + timestamp + address), so 16384 keys ≈ 480 KB.
+	// Sized to handle ~6000 nonces/block (1000 TPS * 6s block) in a single pass.
+	const batchSize = 16_384
 	batch := make([][]byte, 0, batchSize)
 	totalPruned := 0
 
 	for {
-		iter, err := store.Iterator(start, end)
+		// Use closure to ensure iterator cleanup with defer
+		batchEmpty, err := func() (bool, error) {
+			iter, err := store.Iterator(start, end)
+			if err != nil {
+				return true, err
+			}
+			defer iter.Close()
+
+			batch = batch[:0]
+			for ; iter.Valid() && len(batch) < batchSize; iter.Next() {
+				// Copy key since iterator keys may be reused after Close.
+				key := iter.Key()
+				keyCopy := make([]byte, len(key))
+				copy(keyCopy, key)
+				batch = append(batch, keyCopy)
+			}
+			return len(batch) == 0, nil
+		}()
+
 		if err != nil {
 			return err
 		}
-
-		batch = batch[:0]
-		for ; iter.Valid() && len(batch) < batchSize; iter.Next() {
-			// Copy key since iterator keys may be reused after Close.
-			key := iter.Key()
-			keyCopy := make([]byte, len(key))
-			copy(keyCopy, key)
-			batch = append(batch, keyCopy)
-		}
-		iter.Close()
-
-		if len(batch) == 0 {
+		if batchEmpty {
 			break
 		}
 
