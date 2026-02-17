@@ -63,7 +63,7 @@ func (s *KeeperTestSuite) TestParamsRoundTrip() {
 	custom := types.Params{
 		PastWindowUs:         uint64(1 * time.Minute.Microseconds()),
 		FutureWindowUs:       uint64(2 * time.Minute.Microseconds()),
-		TimestampNonceCutoff: 1 << 32,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
 	s.NoError(s.keeper.SetParams(s.ctx, custom))
 
@@ -381,9 +381,9 @@ func (s *KeeperTestSuite) TestValidateGenesis() {
 	}
 	s.Error(types.ValidateGenesis(gs))
 
-	// Invalid params
+	// Invalid params: wrong cutoff
 	gs = types.DefaultGenesisState()
-	gs.Params.TimestampNonceCutoff = 0
+	gs.Params.TimestampNonceCutoff = 42
 	s.Error(types.ValidateGenesis(gs))
 }
 
@@ -423,16 +423,15 @@ func (s *KeeperTestSuite) TestValidateTimestampNonce_UpperBoundOverflow() {
 	farFutureCtx := s.ctx.WithBlockTime(time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC))
 	blockTimeUs := uint64(farFutureCtx.BlockTime().UnixMicro())
 
-	// Set future window so large it would overflow
+	// Construct params that would overflow (bypasses Validate via direct call).
 	overflowParams := types.Params{
 		PastWindowUs:         types.DefaultPastWindowUs,
 		FutureWindowUs:       math.MaxUint64 - blockTimeUs + 1, // exactly causes overflow
-		TimestampNonceCutoff: types.DefaultTimestampNonceCutoff,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
-	s.NoError(s.keeper.SetParams(farFutureCtx, overflowParams))
 
 	// upperBound overflows -- should return an error rather than silently wrapping.
-	err := s.keeper.ValidateAndConsumeTimestampNonce(farFutureCtx, addr, blockTimeUs)
+	err := s.keeper.ValidateAndConsumeWithParams(farFutureCtx, addr, blockTimeUs, overflowParams)
 	s.ErrorIs(err, types.ErrNonceOverflow)
 }
 
@@ -567,11 +566,11 @@ func (s *KeeperTestSuite) TestExportGenesisEmptyState() {
 func (s *KeeperTestSuite) TestMsgUpdateParams() {
 	ms := keeper.NewMsgServerImpl(s.keeper)
 
-	// Valid authority
+	// Valid authority with valid params
 	newParams := types.Params{
 		PastWindowUs:         uint64(10 * time.Minute.Microseconds()),
 		FutureWindowUs:       uint64(10 * time.Minute.Microseconds()),
-		TimestampNonceCutoff: 1 << 42,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
 	_, err := ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
 		Authority: "cosmos1authority",
@@ -591,10 +590,27 @@ func (s *KeeperTestSuite) TestMsgUpdateParams() {
 	s.Error(err)
 	s.ErrorContains(err, govtypes.ErrInvalidSigner.Error())
 
-	// Invalid params (cutoff = 0)
+	// Invalid: wrong cutoff value
 	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
 		Authority: "cosmos1authority",
-		Params:    types.Params{TimestampNonceCutoff: 0},
+		Params: types.Params{
+			PastWindowUs:         types.DefaultPastWindowUs,
+			FutureWindowUs:       types.DefaultFutureWindowUs,
+			TimestampNonceCutoff: 1 << 42,
+		},
 	})
 	s.Error(err)
+	s.ErrorContains(err, "protocol constant")
+
+	// Invalid: window too large
+	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+		Authority: "cosmos1authority",
+		Params: types.Params{
+			PastWindowUs:         types.MaxWindowUs + 1,
+			FutureWindowUs:       types.DefaultFutureWindowUs,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		},
+	})
+	s.Error(err)
+	s.ErrorContains(err, "exceeds max")
 }
