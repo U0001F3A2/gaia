@@ -74,52 +74,34 @@ func (s *KeeperTestSuite) TestParamsRoundTrip() {
 
 func (s *KeeperTestSuite) TestValidateAndConsumeTimestampNonce() {
 	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
 
-	s.Run("success at block time", func() {
-		addr := s.addrs[0]
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
-		s.NoError(err)
-	})
+	// Stateful sequence: consume -> duplicate -> same-ts-different-addr
+	s.NoError(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs))
+	s.ErrorIs(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs), types.ErrNonceDuplicate)
+	s.NoError(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, s.addrs[1], blockTimeUs))
 
-	s.Run("duplicate nonce rejected", func() {
-		addr := s.addrs[0] // already consumed above
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
-		s.ErrorIs(err, types.ErrNonceDuplicate)
-	})
-
-	s.Run("same timestamp different address succeeds", func() {
-		addr2 := s.addrs[1]
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr2, blockTimeUs)
-		s.NoError(err)
-	})
-
-	s.Run("expired nonce rejected", func() {
-		addr := s.addrs[0]
-		expired := blockTimeUs - types.DefaultPastWindowUs - 1
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, expired)
-		s.ErrorIs(err, types.ErrNonceExpired)
-	})
-
-	s.Run("future nonce rejected", func() {
-		addr := s.addrs[0]
-		future := blockTimeUs + types.DefaultFutureWindowUs + 1
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, future)
-		s.ErrorIs(err, types.ErrNonceTooFarInFuture)
-	})
-
-	s.Run("exact lower bound accepted", func() {
-		addr := s.addrs[0]
-		lowerBound := blockTimeUs - types.DefaultPastWindowUs
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, lowerBound)
-		s.NoError(err)
-	})
-
-	s.Run("exact upper bound accepted", func() {
-		addr := s.addrs[0]
-		upperBound := blockTimeUs + types.DefaultFutureWindowUs
-		err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, upperBound)
-		s.NoError(err)
-	})
+	// Independent boundary cases (each uses a unique nonce value, no state dependency)
+	tests := []struct {
+		name    string
+		nonce   uint64
+		wantErr error
+	}{
+		{"expired nonce rejected", blockTimeUs - types.DefaultPastWindowUs - 1, types.ErrNonceExpired},
+		{"future nonce rejected", blockTimeUs + types.DefaultFutureWindowUs + 1, types.ErrNonceTooFarInFuture},
+		{"exact lower bound accepted", blockTimeUs - types.DefaultPastWindowUs, nil},
+		{"exact upper bound accepted", blockTimeUs + types.DefaultFutureWindowUs, nil},
+	}
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, tc.nonce)
+			if tc.wantErr == nil {
+				s.NoError(err)
+			} else {
+				s.ErrorIs(err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func (s *KeeperTestSuite) TestPruneExpiredNonces() {
