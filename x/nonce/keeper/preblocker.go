@@ -21,7 +21,11 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 		return err
 	}
 
-	blockTimeUs := uint64(sdkCtx.BlockTime().UnixMicro())
+	rawBlockTimeUs := sdkCtx.BlockTime().UnixMicro()
+	if rawBlockTimeUs <= 0 {
+		return nil // block time not set or before epoch; nothing to prune
+	}
+	blockTimeUs := uint64(rawBlockTimeUs)
 
 	// Underflow-safe cutoff
 	var cutoffUs uint64

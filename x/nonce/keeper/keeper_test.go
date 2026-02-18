@@ -41,6 +41,8 @@ func (s *KeeperTestSuite) SetupTest() {
 
 	k := keeper.NewKeeper(cdc, storeService, "cosmos1authority")
 	s.NoError(k.SetParams(s.ctx, types.DefaultParams()))
+	// Initialize watermark as PreBlocker would in real block processing.
+	s.NoError(k.PruneExpiredNonces(s.ctx))
 	s.keeper = k
 
 	// Generate valid test addresses
@@ -396,24 +398,31 @@ func (s *KeeperTestSuite) TestValidateGenesis() {
 // --- Edge Case: Zero timestamp at genesis block ---
 
 func (s *KeeperTestSuite) TestValidateTimestampNonce_GenesisBlockTime() {
-	// Block time = 0 (genesis). Lower bound = max(0, 0 - window) = 0.
-	genesisCtx := s.ctx.WithBlockTime(time.Unix(0, 0))
+	// Fresh keeper with no watermark, simulating a genesis block at epoch.
+	key := storetypes.NewKVStoreKey("nonce_genesis_test")
+	testCtx := testutil.DefaultContextWithDB(s.T(), key, storetypes.NewTransientStoreKey("transient_genesis"))
+	genesisCtx := testCtx.Ctx.WithBlockTime(time.Unix(0, 0))
+
+	cdc := codec.NewProtoCodec(codectypes.NewInterfaceRegistry())
+	k := keeper.NewKeeper(cdc, runtime.NewKVStoreService(key), "cosmos1authority")
+	s.NoError(k.SetParams(genesisCtx, types.DefaultParams()))
+
 	addr := s.addrs[0]
 
-	// Nonce = 0 should pass bounds check (>= lowerBound=0, <= upperBound=futureWindow).
-	err := s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
+	// Nonce = 0 should pass (watermark=0, upper bound = futureWindow).
+	err := k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
 	s.NoError(err)
 
 	// Duplicate at nonce=0
-	err = s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
+	err = k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
 	s.ErrorIs(err, types.ErrNonceDuplicate)
 
 	// A nonce within future window should also work
-	err = s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs)
+	err = k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs)
 	s.NoError(err)
 
 	// A nonce beyond future window should fail
-	err = s.keeper.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs+1)
+	err = k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs+1)
 	s.ErrorIs(err, types.ErrNonceTooFarInFuture)
 }
 

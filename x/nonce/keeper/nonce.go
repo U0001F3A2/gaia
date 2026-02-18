@@ -50,20 +50,13 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	blockTimeUs := uint64(sdkCtx.BlockTime().UnixMicro())
 
-	// Underflow-safe lower bound
-	var lowerBound uint64
-	if blockTimeUs > params.PastWindowUs {
-		lowerBound = blockTimeUs - params.PastWindowUs
-	}
-
-	// Enforce monotonic prune watermark: if past_window_us was expanded via
-	// governance, already-pruned nonces must stay rejected.
+	// Lower bound: the monotonic prune watermark set by PreBlocker each block
+	// to max(blockTime - pastWindow) across all blocks. This handles both
+	// normal expiry and governance window expansion (already-pruned nonces
+	// stay rejected even if the window grows).
 	watermark, err := k.GetPruneWatermark(ctx)
 	if err != nil {
 		return err
-	}
-	if watermark > lowerBound {
-		lowerBound = watermark
 	}
 
 	upperBound := blockTimeUs + params.FutureWindowUs
@@ -71,8 +64,8 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 		return errorsmod.Wrapf(types.ErrNonceOverflow, "blockTime=%d + futureWindow=%d", blockTimeUs, params.FutureWindowUs)
 	}
 
-	if nonceUs < lowerBound {
-		return errorsmod.Wrapf(types.ErrNonceExpired, "nonce %d < lower bound %d", nonceUs, lowerBound)
+	if nonceUs < watermark {
+		return errorsmod.Wrapf(types.ErrNonceExpired, "nonce %d < lower bound %d", nonceUs, watermark)
 	}
 	if nonceUs > upperBound {
 		return errorsmod.Wrapf(types.ErrNonceTooFarInFuture, "nonce %d > upper bound %d", nonceUs, upperBound)
