@@ -18,6 +18,12 @@ var (
 	// Timestamp-first ordering enables efficient range deletion during pruning.
 	NonceKeyPrefix = []byte{0x02}
 
+	// PruneWatermarkKey stores the highest pruning cutoff (microseconds) ever used.
+	// Monotonically increasing. Prevents replay attacks when past_window_us expands
+	// via governance: nonces below the watermark are always rejected, even if the
+	// expanded window would otherwise re-admit them.
+	PruneWatermarkKey = []byte{0x03}
+
 	// NonceKeyMinLen is the minimum valid nonce key length: prefix + 8-byte timestamp.
 	// Keys shorter than this cannot contain a valid timestamp and should be skipped.
 	NonceKeyMinLen = len(NonceKeyPrefix) + 8

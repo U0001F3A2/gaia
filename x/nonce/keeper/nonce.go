@@ -56,6 +56,16 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 		lowerBound = blockTimeUs - params.PastWindowUs
 	}
 
+	// Enforce monotonic prune watermark: if past_window_us was expanded via
+	// governance, already-pruned nonces must stay rejected.
+	watermark, err := k.GetPruneWatermark(ctx)
+	if err != nil {
+		return err
+	}
+	if watermark > lowerBound {
+		lowerBound = watermark
+	}
+
 	upperBound := blockTimeUs + params.FutureWindowUs
 	if upperBound < blockTimeUs {
 		return errorsmod.Wrapf(types.ErrNonceOverflow, "blockTime=%d + futureWindow=%d", blockTimeUs, params.FutureWindowUs)

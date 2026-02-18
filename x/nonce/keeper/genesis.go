@@ -22,6 +22,12 @@ func (k Keeper) InitGenesis(ctx sdk.Context, gs *types.GenesisState) {
 			panic(err)
 		}
 	}
+
+	if gs.PruneHighWatermarkUs > 0 {
+		if err := k.SetPruneWatermark(ctx, gs.PruneHighWatermarkUs); err != nil {
+			panic(err)
+		}
+	}
 }
 
 // ExportGenesis exports the current x/nonce module state as a GenesisState.
@@ -54,8 +60,14 @@ func (k Keeper) ExportGenesis(ctx sdk.Context) *types.GenesisState {
 		})
 	}
 
+	watermark, err := k.GetPruneWatermark(ctx)
+	if err != nil {
+		panic(err)
+	}
+
 	return &types.GenesisState{
-		Params:       params,
-		NonceEntries: entries,
+		Params:               params,
+		NonceEntries:         entries,
+		PruneHighWatermarkUs: watermark,
 	}
 }
