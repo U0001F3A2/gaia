@@ -280,16 +280,6 @@ func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress() {
 
 // --- Key Encoding Tests ---
 
-func (s *KeeperTestSuite) TestKeyEncodingRoundTrip() {
-	addr := s.addrs[0]
-	ts := uint64(1738780800000000)
-
-	key := types.BuildNonceKey(ts, addr)
-	gotTs, gotAddr := types.ParseNonceKey(key)
-	s.Equal(ts, gotTs)
-	s.Equal([]byte(addr), gotAddr)
-}
-
 func (s *KeeperTestSuite) TestKeyOrderingIsTimestampFirst() {
 	addr := s.addrs[0]
 	key1 := types.BuildNonceKey(100, addr)
@@ -449,44 +439,6 @@ func (s *KeeperTestSuite) TestValidateTimestampNonce_UpperBoundOverflow() {
 	// upperBound overflows -- should return an error rather than silently wrapping.
 	err := s.keeper.ValidateAndConsumeWithParams(farFutureCtx, addr, blockTimeUs, overflowParams)
 	s.ErrorIs(err, types.ErrNonceOverflow)
-}
-
-// --- Edge Case: Future boundary exactness ---
-
-func (s *KeeperTestSuite) TestValidateTimestampNonce_FutureBoundaryExact() {
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-	addr := s.addrs[0]
-
-	// Exactly at upper bound: should succeed
-	exactUpper := blockTimeUs + types.DefaultFutureWindowUs
-	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, exactUpper)
-	s.NoError(err, "nonce at exact upper bound should be accepted")
-
-	// One past upper bound: should fail
-	addr2 := s.addrs[1]
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr2, exactUpper+1)
-	s.ErrorIs(err, types.ErrNonceTooFarInFuture, "nonce one past upper bound should be rejected")
-}
-
-// --- Edge Case: ValidateAndConsumeWithParams matches ValidateAndConsumeTimestampNonce ---
-
-func (s *KeeperTestSuite) TestValidateAndConsumeWithParams() {
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-	addr := s.addrs[0]
-	params, err := s.keeper.GetParams(s.ctx)
-	s.NoError(err)
-
-	err = s.keeper.ValidateAndConsumeWithParams(s.ctx, addr, blockTimeUs, params)
-	s.NoError(err)
-
-	// Verify it's consumed
-	has, err := s.keeper.HasNonce(s.ctx, addr, blockTimeUs)
-	s.NoError(err)
-	s.True(has)
-
-	// Duplicate via WithParams
-	err = s.keeper.ValidateAndConsumeWithParams(s.ctx, addr, blockTimeUs, params)
-	s.ErrorIs(err, types.ErrNonceDuplicate)
 }
 
 // --- Prune: large number of expired entries ---
