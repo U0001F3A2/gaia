@@ -131,49 +131,7 @@ func (s *decoratorTestSuite) createSignedTx(
 	t *testing.T, privs []cryptotypes.PrivKey,
 	accNums, accSeqs []uint64, chainID string,
 ) xauthsigning.Tx {
-	t.Helper()
-
-	// Create msg with all signers so len(signers) == len(sigs)
-	addrs := make([]sdk.AccAddress, len(privs))
-	for i, p := range privs {
-		addrs[i] = sdk.AccAddress(p.PubKey().Address())
-	}
-	msgs := []sdk.Msg{testdata.NewTestMsg(addrs...)}
-	require.NoError(t, s.txBuilder.SetMsgs(msgs...))
-	s.txBuilder.SetFeeAmount(sdk.NewCoins(sdk.NewInt64Coin("atom", 150)))
-	s.txBuilder.SetGasLimit(200000)
-
-	// Round 1: set empty signatures
-	var sigsV2 []signing.SignatureV2
-	for i, priv := range privs {
-		sigsV2 = append(sigsV2, signing.SignatureV2{
-			PubKey:   priv.PubKey(),
-			Data:     &signing.SingleSignatureData{SignMode: signing.SignMode_SIGN_MODE_DIRECT},
-			Sequence: accSeqs[i],
-		})
-	}
-	require.NoError(t, s.txBuilder.SetSignatures(sigsV2...))
-
-	// Round 2: sign
-	sigsV2 = nil
-	for i, priv := range privs {
-		signerData := xauthsigning.SignerData{
-			Address:       sdk.AccAddress(priv.PubKey().Address()).String(),
-			ChainID:       chainID,
-			AccountNumber: accNums[i],
-			Sequence:      accSeqs[i],
-			PubKey:        priv.PubKey(),
-		}
-		sigV2, err := tx.SignWithPrivKey(
-			s.ctx, signing.SignMode_SIGN_MODE_DIRECT, signerData,
-			s.txBuilder, priv, s.clientCtx.TxConfig, accSeqs[i],
-		)
-		require.NoError(t, err)
-		sigsV2 = append(sigsV2, sigV2)
-	}
-	require.NoError(t, s.txBuilder.SetSignatures(sigsV2...))
-
-	return s.txBuilder.GetTx()
+	return s.createSignedTxWithMode(t, privs, accNums, accSeqs, chainID, signing.SignMode_SIGN_MODE_DIRECT)
 }
 
 func (s *decoratorTestSuite) createSignedTxWithMode(
