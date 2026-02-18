@@ -4,6 +4,7 @@ package gaia.nonce.v1;
 option go_package = "github.com/cosmos/gaia/x/nonce/types";
 
 import "gogoproto/gogo.proto";
+import "cosmos_proto/cosmos.proto";
 import "amino/amino.proto";
 
 // Params defines the parameters for the x/nonce module.
@@ -30,5 +31,5 @@ message NonceEntry {
   // timestamp_us is the nonce value in microseconds since Unix epoch.
   uint64 timestamp_us = 1;
   // address is the bech32-encoded account address that consumed this nonce.
-  string address = 2;
+  string address = 2 [ (cosmos_proto.scalar) = "cosmos.AddressString" ];
 }

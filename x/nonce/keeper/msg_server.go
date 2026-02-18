@@ -27,10 +27,6 @@ func (ms msgServer) UpdateParams(ctx context.Context, msg *types.MsgUpdateParams
 		return nil, errorsmod.Wrapf(govtypes.ErrInvalidSigner, "unauthorized: expected %s, got %s", ms.Keeper.GetAuthority(), msg.Authority)
 	}
 
-	if err := msg.Params.Validate(); err != nil {
-		return nil, err
-	}
-
 	if err := ms.Keeper.SetParams(ctx, msg.Params); err != nil {
 		return nil, err
 	}

@@ -116,12 +116,11 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 
 		// --- BEGIN FORKED: replaces SDK sequence check (lines 362-369) ---
 		if !isUnordered {
-			params, err := getNonceParams()
-			if err != nil {
-				return ctx, err
-			}
-
 			if sig.Sequence >= types.TimestampNonceCutoff {
+				params, err := getNonceParams()
+				if err != nil {
+					return ctx, err
+				}
 				if err := svd.nk.ValidateAndConsumeWithParams(ctx, signers[i], sig.Sequence, params); err != nil {
 					return ctx, err
 				}
