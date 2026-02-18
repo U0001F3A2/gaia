@@ -81,6 +81,8 @@ func setupDecoratorTest(t *testing.T) *decoratorTestSuite {
 	nonceStoreService := runtime.NewKVStoreService(nonceKey)
 	nk := noncekeeper.NewKeeper(cdc, nonceStoreService, "cosmos1authority")
 	require.NoError(t, nk.SetParams(s.ctx, noncetypes.DefaultParams()))
+	// Initialize watermark as PreBlocker would in real block processing.
+	require.NoError(t, nk.PruneExpiredNonces(s.ctx))
 	s.nonceKeeper = nk
 
 	s.clientCtx = client.Context{}.WithTxConfig(s.encCfg.TxConfig)
