@@ -40,10 +40,13 @@ $GAIAD genesis gentx validator "$VALIDATOR_STAKE" \
 
 $GAIAD genesis collect-gentxs --home "$HOME_DIR"
 
-# Genesis tweaks: fast blocks, shorter voting period
+# Genesis tweaks: fast blocks, shorter voting period, short nonce past window (10s)
 jq '.app_state.gov.params.voting_period = "20s" |
     .app_state.gov.params.expedited_voting_period = "10s" |
-    .app_state.staking.params.unbonding_time = "86400s"' \
+    .app_state.staking.params.unbonding_time = "86400s" |
+    .app_state.nonce.params.past_window_us = "10000000" |
+    .app_state.nonce.params.future_window_us = "300000000" |
+    .app_state.nonce.params.timestamp_nonce_cutoff = "1099511627776"' \
     "$HOME_DIR/config/genesis.json" > "$HOME_DIR/config/genesis_tmp.json"
 mv "$HOME_DIR/config/genesis_tmp.json" "$HOME_DIR/config/genesis.json"
 

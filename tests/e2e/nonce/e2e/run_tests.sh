@@ -1,6 +1,6 @@
 #!/bin/bash
 # E2E functional tests for the x/nonce module.
-# Runs 12 test cases against a live single-node chain.
+# Runs 15 test cases against a live single-node chain.
 # Expects: NODE_URL, GAIA_HOME env vars set by docker-compose.
 
 set -euo pipefail
@@ -13,7 +13,7 @@ FEES="--gas 200000 --fees 200000stake"
 
 PASSED=0
 FAILED=0
-TOTAL=12
+TOTAL=15
 
 # Helper: get user and validator addresses
 USER_ADDR=$(gaiad keys show user -a $KB --home "$HOME_DIR")
@@ -113,19 +113,19 @@ echo ""
 ACCT_NUM=$(get_account_number "$VALIDATOR_ADDR")
 
 # ---- Test 1: Query params ----
-echo "[1/12] test_query_params"
+echo "[1/15] test_query_params"
 PARAMS=$(gaiad query nonce params --node "$NODE_URL" --home "$HOME_DIR" -o json 2>/dev/null)
 PAST_WINDOW=$(echo "$PARAMS" | jq -r '.params.past_window_us // .past_window_us')
 CUTOFF=$(echo "$PARAMS" | jq -r '.params.timestamp_nonce_cutoff // .timestamp_nonce_cutoff')
 
-if [ "$PAST_WINDOW" = "300000000" ] && [ "$CUTOFF" = "1099511627776" ]; then
+if [ "$PAST_WINDOW" = "10000000" ] && [ "$CUTOFF" = "1099511627776" ]; then
   pass "params: past_window_us=$PAST_WINDOW, cutoff=$CUTOFF"
 else
   fail "params mismatch" "past_window_us=$PAST_WINDOW cutoff=$CUTOFF"
 fi
 
 # ---- Test 2: Sequential tx (standard nonce) ----
-echo "[2/12] test_sequential_tx"
+echo "[2/15] test_sequential_tx"
 TX_OUT=$(send_sequential_tx validator "$USER_ADDR" 1000stake)
 TX_HASH=$(echo "$TX_OUT" | jq -r '.txhash')
 
@@ -145,7 +145,7 @@ fi
 SEQ_AFTER_SEQUENTIAL=$(get_sequence "$VALIDATOR_ADDR")
 
 # ---- Test 3: Timestamp nonce tx ----
-echo "[3/12] test_timestamp_nonce_tx"
+echo "[3/15] test_timestamp_nonce_tx"
 TS_NONCE=$(now_us)
 
 TX_OUT=$(send_timestamp_tx validator "$USER_ADDR" 1000stake "$TS_NONCE" "$ACCT_NUM")
@@ -169,7 +169,7 @@ else
 fi
 
 # ---- Test 4: Query has-nonce ----
-echo "[4/12] test_query_has_nonce"
+echo "[4/15] test_query_has_nonce"
 # Wait a moment for the block to commit
 sleep 2
 HAS_RESULT=$(gaiad query nonce has-nonce "$VALIDATOR_ADDR" "$TS_NONCE" \
@@ -183,7 +183,7 @@ else
 fi
 
 # ---- Test 5: Query nonces-by-address ----
-echo "[5/12] test_query_nonces_by_address"
+echo "[5/15] test_query_nonces_by_address"
 NONCES_RESULT=$(gaiad query nonce nonces "$VALIDATOR_ADDR" \
   --node "$NODE_URL" --home "$HOME_DIR" -o json 2>/dev/null)
 FOUND=$(echo "$NONCES_RESULT" | jq --arg ts "$TS_NONCE" '[.timestamp_nonces[] | select(tostring == $ts)] | length')
@@ -195,7 +195,7 @@ else
 fi
 
 # ---- Test 6: Duplicate rejection ----
-echo "[6/12] test_duplicate_rejection"
+echo "[6/15] test_duplicate_rejection"
 TX_OUT=$(send_timestamp_tx validator "$USER_ADDR" 1000stake "$TS_NONCE" "$ACCT_NUM")
 TX_HASH=$(echo "$TX_OUT" | jq -r '.txhash')
 TX_CODE=$(echo "$TX_OUT" | jq -r '.code // 0')
@@ -221,7 +221,7 @@ else
 fi
 
 # ---- Test 7: Parallel timestamps (two different us timestamps) ----
-echo "[7/12] test_parallel_timestamps"
+echo "[7/15] test_parallel_timestamps"
 TS1=$(( $(now_us) + 1 ))
 sleep 1
 TS2=$(( $(now_us) + 2 ))
@@ -260,9 +260,9 @@ else
 fi
 
 # ---- Test 8: Expired nonce rejection ----
-echo "[8/12] test_expired_nonce_rejection"
-# 10 minutes in the past (past window is 5 min)
-EXPIRED_TS=$(( $(now_us) - 600000000 ))
+echo "[8/15] test_expired_nonce_rejection"
+# 20 seconds in the past (past window is 10s)
+EXPIRED_TS=$(( $(now_us) - 20000000 ))
 
 TX_OUT=$(send_timestamp_tx validator "$USER_ADDR" 500stake "$EXPIRED_TS" "$ACCT_NUM")
 TX_HASH=$(echo "$TX_OUT" | jq -r '.txhash')
@@ -287,7 +287,7 @@ else
 fi
 
 # ---- Test 9: Sequential tx after timestamp (sequence state intact) ----
-echo "[9/12] test_sequential_after_timestamp"
+echo "[9/15] test_sequential_after_timestamp"
 # The validator's on-chain sequence should NOT have been incremented by timestamp nonce txs
 SEQ_NOW=$(get_sequence "$VALIDATOR_ADDR")
 
@@ -311,7 +311,7 @@ else
 fi
 
 # ---- Test 10: --timestamp CLI flag ----
-echo "[10/12] test_timestamp_cli_flag"
+echo "[10/15] test_timestamp_cli_flag"
 # Uses the --timestamp flag which auto-generates a microsecond timestamp nonce.
 # The flag wraps AccountRetriever so a normal online `tx bank send` works.
 # Note: --timestamp prints "Using timestamp nonce: ..." to stderr, so we
@@ -345,7 +345,7 @@ if [ "$SEQ_AFTER_FLAG" = "$SEQ_AFTER_SEQUENTIAL" ]; then
 fi
 
 # ---- Test 11: Future nonce rejection ----
-echo "[11/12] test_future_nonce_rejection"
+echo "[11/15] test_future_nonce_rejection"
 # 10 minutes in the future (future window is 5 min)
 FUTURE_TS=$(( $(now_us) + 600000000 ))
 
@@ -372,7 +372,7 @@ else
 fi
 
 # ---- Test 12: Nonces query (verify accumulated nonces) ----
-echo "[12/12] test_nonces_query_accumulated"
+echo "[12/15] test_nonces_query_accumulated"
 # After tests 3, 7, and 10, the validator should have multiple timestamp nonces.
 # Query them all and verify we get at least the ones we created.
 NONCES_RESULT=$(gaiad query nonce nonces "$VALIDATOR_ADDR" \
@@ -385,6 +385,112 @@ elif [ "$NONCE_COUNT" -gt 0 ]; then
   pass "nonces query returned $NONCE_COUNT nonces (some may have been pruned)"
 else
   fail "nonces query returned 0 nonces" "$NONCES_RESULT"
+fi
+
+# ---- Test 13: Nonce pruned from state after expiry ----
+echo "[13/15] test_nonce_pruned_after_expiry"
+# Submit a timestamp nonce, wait for it to expire (past window = 10s),
+# then verify it was pruned from state via has-nonce query.
+WM_TS=$(now_us)
+TX_OUT=$(send_timestamp_tx validator "$USER_ADDR" 100stake "$WM_TS" "$ACCT_NUM")
+TX_HASH=$(echo "$TX_OUT" | jq -r '.txhash')
+TX_CODE=$(echo "$TX_OUT" | jq -r '.code // 0')
+
+if [ "$TX_CODE" != "0" ] && [ "$TX_CODE" != "" ] && [ "$TX_CODE" != "null" ]; then
+  fail "watermark setup tx rejected" "code=$TX_CODE"
+elif [ -n "$TX_HASH" ] && [ "$TX_HASH" != "null" ]; then
+  wait_for_tx "$TX_HASH" > /dev/null 2>&1
+
+  # Confirm nonce is in state
+  HAS_BEFORE=$(gaiad query nonce has-nonce "$VALIDATOR_ADDR" "$WM_TS" \
+    --node "$NODE_URL" --home "$HOME_DIR" -o json 2>/dev/null | jq -r '.has_nonce')
+
+  if [ "$HAS_BEFORE" != "true" ]; then
+    fail "nonce not found in state after submission" "has_nonce=$HAS_BEFORE"
+  else
+    # Wait for nonce to expire (past window = 10s) + a few blocks for PreBlocker to prune
+    echo "  (waiting 15s for nonce $WM_TS to expire and get pruned...)"
+    sleep 15
+
+    HAS_AFTER=$(gaiad query nonce has-nonce "$VALIDATOR_ADDR" "$WM_TS" \
+      --node "$NODE_URL" --home "$HOME_DIR" -o json 2>/dev/null | jq -r '.has_nonce')
+
+    # Proto3 JSON omits false booleans, so null means false
+    if [ "$HAS_AFTER" = "false" ] || [ "$HAS_AFTER" = "null" ]; then
+      pass "nonce $WM_TS was pruned from state after expiry (has_nonce: true -> ${HAS_AFTER:-false})"
+    else
+      fail "nonce was NOT pruned from state" "has_nonce still $HAS_AFTER"
+    fi
+  fi
+else
+  fail "watermark setup tx broadcast failed" "$TX_OUT"
+fi
+
+# ---- Test 14: Pruned nonce cannot be replayed ----
+echo "[14/15] test_pruned_nonce_rejected"
+# The nonce from test 13 (WM_TS) was pruned. Try to replay it.
+# Even though it's been deleted from state, it should be rejected
+# (either by time window bounds or by the watermark).
+TX_OUT=$(send_timestamp_tx validator "$USER_ADDR" 100stake "$WM_TS" "$ACCT_NUM")
+TX_HASH=$(echo "$TX_OUT" | jq -r '.txhash')
+TX_CODE=$(echo "$TX_OUT" | jq -r '.code // 0')
+
+if [ "$TX_CODE" != "0" ] && [ "$TX_CODE" != "" ] && [ "$TX_CODE" != "null" ]; then
+  pass "pruned nonce replay rejected at broadcast (code=$TX_CODE)"
+elif [ -n "$TX_HASH" ] && [ "$TX_HASH" != "null" ]; then
+  RESULT=$(wait_for_tx "$TX_HASH")
+  CODE=$(echo "$RESULT" | jq -r '.code')
+  if [ "$CODE" != "0" ]; then
+    pass "pruned nonce replay rejected on-chain (code=$CODE)"
+  else
+    fail "pruned nonce replay was NOT rejected" "code=$CODE"
+  fi
+else
+  if echo "$TX_OUT" | grep -qi "expired\|too far in the past\|watermark"; then
+    pass "pruned nonce replay rejected (error in output)"
+  else
+    fail "unexpected output for pruned nonce replay" "$TX_OUT"
+  fi
+fi
+
+# ---- Test 15: Nonce count decreases after pruning ----
+echo "[15/15] test_nonce_count_decreases_after_pruning"
+# Submit two fresh nonces, record the count, wait for them to expire,
+# and verify the count has decreased (proving PreBlocker pruning works).
+FRESH_TS1=$(now_us)
+sleep 1
+FRESH_TS2=$(( $(now_us) + 1 ))
+
+TX_OUT1=$(send_timestamp_tx validator "$USER_ADDR" 100stake "$FRESH_TS1" "$ACCT_NUM")
+TX_HASH1=$(echo "$TX_OUT1" | jq -r '.txhash')
+if [ -n "$TX_HASH1" ] && [ "$TX_HASH1" != "null" ]; then
+  wait_for_tx "$TX_HASH1" > /dev/null 2>&1
+fi
+
+TX_OUT2=$(send_timestamp_tx validator "$USER_ADDR" 100stake "$FRESH_TS2" "$ACCT_NUM")
+TX_HASH2=$(echo "$TX_OUT2" | jq -r '.txhash')
+if [ -n "$TX_HASH2" ] && [ "$TX_HASH2" != "null" ]; then
+  wait_for_tx "$TX_HASH2" > /dev/null 2>&1
+fi
+
+sleep 1
+COUNT_BEFORE=$(gaiad query nonce nonces "$VALIDATOR_ADDR" \
+  --node "$NODE_URL" --home "$HOME_DIR" -o json 2>/dev/null | \
+  jq '.timestamp_nonces | length' 2>/dev/null || echo "0")
+
+echo "  (nonce count before pruning: $COUNT_BEFORE, waiting 15s for expiry...)"
+sleep 15
+
+COUNT_AFTER=$(gaiad query nonce nonces "$VALIDATOR_ADDR" \
+  --node "$NODE_URL" --home "$HOME_DIR" -o json 2>/dev/null | \
+  jq '.timestamp_nonces | length' 2>/dev/null || echo "0")
+
+if [ "$COUNT_AFTER" -lt "$COUNT_BEFORE" ]; then
+  pass "nonce count decreased after pruning ($COUNT_BEFORE -> $COUNT_AFTER)"
+elif [ "$COUNT_AFTER" -eq 0 ] && [ "$COUNT_BEFORE" -gt 0 ]; then
+  pass "all nonces pruned ($COUNT_BEFORE -> 0)"
+else
+  fail "nonce count did not decrease" "before=$COUNT_BEFORE after=$COUNT_AFTER"
 fi
 
 # ---- Summary ----

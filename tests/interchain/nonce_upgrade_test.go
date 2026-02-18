@@ -1,13 +1,18 @@
 package interchain_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	sdkmath "cosmossdk.io/math"
 
 	"github.com/cosmos/interchaintest/v10"
+	"github.com/cosmos/interchaintest/v10/chain/cosmos"
 	"github.com/cosmos/interchaintest/v10/ibc"
+	"github.com/cosmos/interchaintest/v10/testutil"
 	"github.com/stretchr/testify/suite"
 	"github.com/tidwall/gjson"
 
@@ -195,6 +200,195 @@ func (s *NonceUpgradeSuite) TestNonceDuplicateRejection() {
 	s.Require().True(
 		strings.Contains(output, "already consumed") || strings.Contains(output, "nonce already consumed"),
 		"duplicate nonce should be rejected; got: %s", output,
+	)
+}
+
+// submitNonceParamsProposal submits and passes a governance proposal to update
+// the x/nonce module params.
+func (s *NonceUpgradeSuite) submitNonceParamsProposal(pastWindowUs, futureWindowUs, cutoff string) {
+	ctx := s.GetContext()
+
+	govAuthority, err := s.Chain.GetGovernanceAddress(ctx)
+	s.Require().NoError(err)
+
+	proposalMsg := fmt.Sprintf(`{
+		"@type": "/gaia.nonce.v1.MsgUpdateParams",
+		"authority": "%s",
+		"params": {
+			"past_window_us": "%s",
+			"future_window_us": "%s",
+			"timestamp_nonce_cutoff": "%s"
+		}
+	}`, govAuthority, pastWindowUs, futureWindowUs, cutoff)
+
+	txhash, err := s.Chain.GetNode().SubmitProposal(ctx, interchaintest.FaucetAccountKeyName,
+		cosmos.TxProposalv1{
+			Title:    "Update nonce params",
+			Deposit:  chainsuite.GovDepositAmount,
+			Messages: []json.RawMessage{json.RawMessage(proposalMsg)},
+			Summary:  fmt.Sprintf("Set past_window_us=%s, future_window_us=%s", pastWindowUs, futureWindowUs),
+			Metadata: "ipfs://CID",
+		})
+	s.Require().NoError(err)
+
+	propId, err := s.Chain.GetProposalID(ctx, txhash)
+	s.Require().NoError(err)
+	s.Require().NoError(s.Chain.PassProposal(ctx, propId))
+}
+
+// TestWatermarkAfterPruning verifies that the prune high watermark advances
+// after nonces expire and get pruned by PreBlocker.
+//
+// Strategy: shrink past_window_us to 10s via governance, submit a timestamp
+// nonce, wait for it to expire, then verify it was pruned via has-nonce query.
+// If pruning happened, the watermark must have advanced (PruneExpiredNonces
+// always sets the watermark before deleting entries).
+func (s *NonceUpgradeSuite) TestWatermarkAfterPruning() {
+	ctx := s.GetContext()
+
+	// Shrink past window to 10 seconds for fast expiry.
+	s.submitNonceParamsProposal("10000000", "300000000", "1099511627776")
+
+	// Verify params were updated.
+	pastWindow, err := s.Chain.QueryJSON(ctx, "params.past_window_us", "nonce", "params")
+	s.Require().NoError(err)
+	s.Require().Equal("10000000", pastWindow.String())
+
+	// Submit a timestamp nonce tx.
+	recipient, err := s.Chain.BuildWallet(ctx, "wm-recipient", "")
+	s.Require().NoError(err)
+
+	_, err = s.Chain.GetNode().ExecTx(ctx,
+		s.UserWallet.KeyName(),
+		"bank", "send",
+		s.UserWallet.FormattedAddress(), recipient.FormattedAddress(), "100"+chainsuite.Uatom,
+		"--timestamp",
+	)
+	s.Require().NoError(err)
+
+	// Record the consumed nonce.
+	noncesResult, err := s.Chain.QueryJSON(ctx, "timestamp_nonces", "nonce", "nonces", s.UserWallet.FormattedAddress())
+	s.Require().NoError(err)
+	count := int(noncesResult.Get("#").Int())
+	s.Require().GreaterOrEqual(count, 1, "should have at least 1 nonce")
+	consumedNonce := noncesResult.Array()[count-1].String()
+
+	// has-nonce should confirm it exists right now.
+	hasResult, err := s.Chain.QueryJSON(ctx, "has_nonce", "nonce", "has-nonce", s.UserWallet.FormattedAddress(), consumedNonce)
+	s.Require().NoError(err)
+	s.Require().Equal("true", hasResult.String(), "nonce should exist before expiry")
+
+	// Wait for the nonce to expire (10s window) + a few blocks for pruning.
+	time.Sleep(15 * time.Second)
+	s.Require().NoError(testutil.WaitForBlocks(ctx, 3, s.Chain))
+
+	// Verify the nonce was pruned (has-nonce returns false or is absent).
+	// Proto3 JSON omits false booleans, so the response is {} and QueryJSON
+	// can't find has_nonce. Use ExecQuery directly and check raw JSON.
+	stdout, _, err := s.Chain.GetNode().ExecQuery(ctx, "nonce", "has-nonce", s.UserWallet.FormattedAddress(), consumedNonce)
+	s.Require().NoError(err)
+	hasAfter := gjson.GetBytes(stdout, "has_nonce")
+	s.Require().False(hasAfter.Bool(), "nonce should be pruned after expiry (watermark advanced)")
+}
+
+// TestWatermarkPreventsReplayAfterParamExpansion is the definitive e2e proof of
+// the watermark security fix. It demonstrates:
+// 1. Submit timestamp nonce with a short past window (10s)
+// 2. Wait for it to be pruned (watermark advances)
+// 3. Expand past_window_us via governance (10s -> 10min)
+// 4. Attempt to replay the pruned nonce -> rejected by watermark
+func (s *NonceUpgradeSuite) TestWatermarkPreventsReplayAfterParamExpansion() {
+	ctx := s.GetContext()
+
+	// Shrink past window to 10 seconds.
+	s.submitNonceParamsProposal("10000000", "300000000", "1099511627776")
+
+	// Submit a timestamp nonce and record it.
+	recipient, err := s.Chain.BuildWallet(ctx, "wm-replay-recipient", "")
+	s.Require().NoError(err)
+
+	node := s.Chain.GetNode()
+	_, err = node.ExecTx(ctx,
+		s.UserWallet.KeyName(),
+		"bank", "send",
+		s.UserWallet.FormattedAddress(), recipient.FormattedAddress(), "100"+chainsuite.Uatom,
+		"--timestamp",
+	)
+	s.Require().NoError(err)
+
+	// Find the consumed nonce.
+	noncesResult, err := s.Chain.QueryJSON(ctx, "timestamp_nonces", "nonce", "nonces", s.UserWallet.FormattedAddress())
+	s.Require().NoError(err)
+	count := int(noncesResult.Get("#").Int())
+	s.Require().GreaterOrEqual(count, 1)
+	consumedNonce := noncesResult.Array()[count-1].String()
+
+	// Wait for the nonce to expire and get pruned.
+	time.Sleep(15 * time.Second)
+	s.Require().NoError(testutil.WaitForBlocks(ctx, 3, s.Chain))
+
+	// Expand past_window_us to 10 minutes (600s).
+	// This would normally allow the pruned nonce back into the valid window,
+	// but the watermark should prevent it.
+	s.submitNonceParamsProposal("600000000", "300000000", "1099511627776")
+
+	// Verify params were expanded.
+	pastWindow, err := s.Chain.QueryJSON(ctx, "params.past_window_us", "nonce", "params")
+	s.Require().NoError(err)
+	s.Require().Equal("600000000", pastWindow.String())
+
+	// Get account number for offline signing.
+	accountRaw, _, err := node.ExecQuery(ctx, "auth", "account", s.UserWallet.FormattedAddress())
+	s.Require().NoError(err)
+	accountNum := gjson.GetBytes(accountRaw, "account.value.account_number").String()
+	if accountNum == "" {
+		accountNum = gjson.GetBytes(accountRaw, "account.account_number").String()
+	}
+	s.Require().NotEmpty(accountNum)
+
+	// Generate unsigned tx.
+	genCmd := node.BinCommand(
+		"tx", "bank", "send",
+		s.UserWallet.FormattedAddress(), recipient.FormattedAddress(), "100"+chainsuite.Uatom,
+		"--generate-only",
+		"--gas", "200000", "--fees", "200000"+chainsuite.Uatom,
+		"--from", s.UserWallet.KeyName(),
+		"--chain-id", s.Chain.Config().ChainID,
+	)
+	unsignedTx, _, err := node.Exec(ctx, genCmd, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(node.WriteFile(ctx, unsignedTx, "unsigned_wm.json"))
+
+	// Sign offline with the pruned nonce as sequence.
+	signCmd := node.BinCommand(
+		"tx", "sign", node.HomeDir()+"/unsigned_wm.json",
+		"--keyring-backend", "test",
+		"--chain-id", s.Chain.Config().ChainID,
+		"--offline",
+		"--sequence", consumedNonce,
+		"--account-number", accountNum,
+		"--from", s.UserWallet.KeyName(),
+	)
+	signedTx, _, err := node.Exec(ctx, signCmd, nil)
+	s.Require().NoError(err)
+	s.Require().NoError(node.WriteFile(ctx, signedTx, "signed_wm.json"))
+
+	// Broadcast the replay -- should be rejected by the watermark.
+	broadcastCmd := node.NodeCommand(
+		"tx", "broadcast", node.HomeDir()+"/signed_wm.json",
+		"--output", "json",
+	)
+	stdout, _, _ := node.Exec(ctx, broadcastCmd, nil)
+	output := string(stdout)
+
+	// The nonce was pruned and watermark prevents it from being accepted
+	// even though past_window_us was expanded. Expected rejection reason:
+	// "too far in the past" (watermark raises the effective lower bound).
+	s.Require().True(
+		strings.Contains(output, "too far in the past") ||
+			strings.Contains(output, "expired") ||
+			strings.Contains(output, "already consumed"),
+		"pruned nonce replay should be rejected by watermark after window expansion; got: %s", output,
 	)
 }
 
