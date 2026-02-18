@@ -600,65 +600,54 @@ func (s *KeeperTestSuite) TestExportGenesisEmptyState() {
 func (s *KeeperTestSuite) TestMsgUpdateParams() {
 	ms := keeper.NewMsgServerImpl(s.keeper)
 
-	// Valid authority with valid params
-	newParams := types.Params{
-		PastWindowUs:         uint64(10 * time.Minute.Microseconds()),
-		FutureWindowUs:       uint64(10 * time.Minute.Microseconds()),
-		TimestampNonceCutoff: types.TimestampNonceCutoff,
-	}
-	_, err := ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1authority",
-		Params:    newParams,
-	})
-	s.NoError(err)
-
-	got, err := s.keeper.GetParams(s.ctx)
-	s.NoError(err)
-	s.Equal(newParams, got)
-
-	// Wrong authority
-	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1wrongauthority",
-		Params:    types.DefaultParams(),
-	})
-	s.Error(err)
-	s.ErrorContains(err, govtypes.ErrInvalidSigner.Error())
-
-	// Invalid: wrong cutoff value
-	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1authority",
-		Params: types.Params{
+	tenMin := uint64(10 * time.Minute.Microseconds())
+	tests := []struct {
+		name        string
+		authority   string
+		params      types.Params
+		errContains string
+	}{
+		{"valid params", "cosmos1authority", types.Params{
+			PastWindowUs:         tenMin,
+			FutureWindowUs:       tenMin,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		}, ""},
+		{"wrong authority", "cosmos1wrongauthority", types.DefaultParams(),
+			govtypes.ErrInvalidSigner.Error()},
+		{"wrong cutoff", "cosmos1authority", types.Params{
 			PastWindowUs:         types.DefaultPastWindowUs,
 			FutureWindowUs:       types.DefaultFutureWindowUs,
 			TimestampNonceCutoff: 1 << 42,
-		},
-	})
-	s.Error(err)
-	s.ErrorContains(err, "protocol constant")
-
-	// Invalid: past window too large
-	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1authority",
-		Params: types.Params{
+		}, "protocol constant"},
+		{"past window too large", "cosmos1authority", types.Params{
 			PastWindowUs:         types.MaxWindowUs + 1,
 			FutureWindowUs:       types.DefaultFutureWindowUs,
 			TimestampNonceCutoff: types.TimestampNonceCutoff,
-		},
-	})
-	s.Error(err)
-	s.ErrorContains(err, "exceeds max")
-
-	// Invalid: future window too large
-	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1authority",
-		Params: types.Params{
+		}, "exceeds max"},
+		{"future window too large", "cosmos1authority", types.Params{
 			PastWindowUs:         types.DefaultPastWindowUs,
 			FutureWindowUs:       types.MaxWindowUs + 1,
 			TimestampNonceCutoff: types.TimestampNonceCutoff,
-		},
-	})
-	s.Error(err)
-	s.ErrorContains(err, "exceeds max")
+		}, "exceeds max"},
+	}
+
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			_, err := ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+				Authority: tc.authority,
+				Params:    tc.params,
+			})
+			if tc.errContains == "" {
+				s.NoError(err)
+				got, err := s.keeper.GetParams(s.ctx)
+				s.NoError(err)
+				s.Equal(tc.params, got)
+			} else {
+				s.Error(err)
+				s.ErrorContains(err, tc.errContains)
+			}
+		})
+	}
 }
 
 // --- H5: Params validation edge cases ---
@@ -735,35 +724,35 @@ func (s *KeeperTestSuite) TestParamsValidate() {
 // --- H4: MsgUpdateParams.ValidateBasic() ---
 
 func (s *KeeperTestSuite) TestMsgUpdateParamsValidateBasic() {
-	s.Run("valid message", func() {
-		msg := &types.MsgUpdateParams{
-			Authority: s.addrs[0].String(),
-			Params:    types.DefaultParams(),
-		}
-		s.NoError(msg.ValidateBasic())
-	})
+	validAuthority := s.addrs[0].String()
 
-	s.Run("invalid bech32 authority", func() {
-		msg := &types.MsgUpdateParams{
-			Authority: "invalid-authority",
-			Params:    types.DefaultParams(),
-		}
-		s.Error(msg.ValidateBasic())
-	})
+	tests := []struct {
+		name        string
+		authority   string
+		params      types.Params
+		errContains string
+	}{
+		{"valid message", validAuthority, types.DefaultParams(), ""},
+		{"invalid bech32 authority", "invalid-authority", types.DefaultParams(), "decoding bech32 failed"},
+		{"invalid params", validAuthority, types.Params{
+			PastWindowUs:         0,
+			FutureWindowUs:       types.DefaultFutureWindowUs,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		}, "past_window_us must be > 0"},
+	}
 
-	s.Run("invalid params via ValidateBasic", func() {
-		msg := &types.MsgUpdateParams{
-			Authority: s.addrs[0].String(),
-			Params: types.Params{
-				PastWindowUs:         0,
-				FutureWindowUs:       types.DefaultFutureWindowUs,
-				TimestampNonceCutoff: types.TimestampNonceCutoff,
-			},
-		}
-		err := msg.ValidateBasic()
-		s.Error(err)
-		s.Contains(err.Error(), "past_window_us must be > 0")
-	})
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			msg := &types.MsgUpdateParams{Authority: tc.authority, Params: tc.params}
+			err := msg.ValidateBasic()
+			if tc.errContains == "" {
+				s.NoError(err)
+			} else {
+				s.Error(err)
+				s.Contains(err.Error(), tc.errContains)
+			}
+		})
+	}
 }
 
 // --- H7+M7: GRPC query edge cases ---
