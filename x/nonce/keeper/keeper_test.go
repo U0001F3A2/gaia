@@ -806,3 +806,122 @@ func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Ordering() {
 	s.Equal(blockTimeUs+1000, resp.TimestampNonces[1])
 	s.Equal(blockTimeUs+2000, resp.TimestampNonces[2], "last nonce should be largest timestamp")
 }
+
+// --- Prune watermark tests ---
+
+func (s *KeeperTestSuite) TestReplayAfterWindowExpansion() {
+	addr := s.addrs[0]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// 1. Consume a nonce 4 minutes in the past (within default 5 min window)
+	fourMinAgo := blockTimeUs - 4*60*1_000_000
+	s.NoError(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, fourMinAgo))
+
+	// 2. Advance time by 6 minutes so the nonce is now outside the 5 min window
+	advancedCtx := s.ctx.WithBlockTime(s.ctx.BlockTime().Add(6 * time.Minute))
+	s.NoError(s.keeper.PruneExpiredNonces(advancedCtx))
+
+	// Verify nonce was pruned
+	has, _ := s.keeper.HasNonce(advancedCtx, addr, fourMinAgo)
+	s.False(has, "nonce should be pruned")
+
+	// 3. Expand past_window_us from 5 min to 15 min via governance
+	expandedParams := types.Params{
+		PastWindowUs:         15 * 60 * 1_000_000,
+		FutureWindowUs:       types.DefaultFutureWindowUs,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(advancedCtx, expandedParams))
+
+	// 4. Try the same nonce: it's within the expanded window but the watermark blocks it
+	err := s.keeper.ValidateAndConsumeTimestampNonce(advancedCtx, addr, fourMinAgo)
+	s.ErrorIs(err, types.ErrNonceExpired,
+		"replay should be blocked by prune watermark even with expanded window")
+}
+
+func (s *KeeperTestSuite) TestPruneWatermarkMonotonic() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// First prune sets watermark
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+	wm1, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	expectedCutoff := blockTimeUs - types.DefaultPastWindowUs
+	s.Equal(expectedCutoff, wm1)
+
+	// Shrink past window (smaller window -> larger cutoff)
+	smallerWindow := types.Params{
+		PastWindowUs:         1 * 60 * 1_000_000, // 1 min
+		FutureWindowUs:       types.DefaultFutureWindowUs,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(s.ctx, smallerWindow))
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+	wm2, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.True(wm2 >= wm1, "watermark must not decrease")
+
+	// Expand past window (larger window -> smaller cutoff, but watermark stays)
+	largerWindow := types.Params{
+		PastWindowUs:         15 * 60 * 1_000_000, // 15 min
+		FutureWindowUs:       types.DefaultFutureWindowUs,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(s.ctx, largerWindow))
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+	wm3, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.Equal(wm2, wm3, "watermark must not decrease when window expands")
+}
+
+func (s *KeeperTestSuite) TestGenesisRoundTripWithWatermark() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Set a nonce and prune to establish watermark
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+
+	wm, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.True(wm > 0)
+
+	// Export
+	gs := s.keeper.ExportGenesis(s.ctx)
+	s.Equal(wm, gs.PruneHighWatermarkUs)
+
+	// Import into fresh keeper
+	key := storetypes.NewKVStoreKey(types.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(s.T(), key, storetypes.NewTransientStoreKey("transient_wm"))
+	ctx2 := testCtx.Ctx.WithBlockTime(s.ctx.BlockTime())
+
+	registry := codectypes.NewInterfaceRegistry()
+	cdc := codec.NewProtoCodec(registry)
+	storeService := runtime.NewKVStoreService(key)
+	k2 := keeper.NewKeeper(cdc, storeService, "cosmos1authority")
+	k2.InitGenesis(ctx2, gs)
+
+	wm2, err := k2.GetPruneWatermark(ctx2)
+	s.NoError(err)
+	s.Equal(wm, wm2, "watermark should survive genesis round-trip")
+}
+
+func (s *KeeperTestSuite) TestPruneWatermarkEnforcedInValidation() {
+	addr := s.addrs[0]
+
+	// Manually set a high watermark (simulating past pruning)
+	watermark := uint64(s.ctx.BlockTime().UnixMicro()) - 1*60*1_000_000 // 1 min ago
+	s.NoError(s.keeper.SetPruneWatermark(s.ctx, watermark))
+
+	// Try a nonce that's within the default 5 min window but below the watermark
+	belowWatermark := watermark - 1
+	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, belowWatermark)
+	s.ErrorIs(err, types.ErrNonceExpired,
+		"nonce below watermark should be rejected even if within time window")
+
+	// Nonce at exactly the watermark should also be rejected (< lowerBound after max)
+	// Wait -- watermark IS the lower bound. nonce == lowerBound should pass (>= check)
+	// Actually, the lowerBound check is `nonceUs < lowerBound`, so nonce == watermark passes.
+	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, watermark)
+	s.NoError(err, "nonce at exact watermark should be accepted")
+}
