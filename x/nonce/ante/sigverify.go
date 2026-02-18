@@ -33,22 +33,16 @@ import (
 	"github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
-type NonceKeeper interface {
-	GetParams(ctx sdk.Context) (types.Params, error)
-	ValidateAndConsumeTimestampNonce(ctx sdk.Context, addr []byte, nonceUs uint64) error
-	ValidateAndConsumeWithParams(ctx sdk.Context, addr []byte, nonceUs uint64, params types.Params) error
-}
-
 type SigVerificationDecorator struct {
 	ak              authante.AccountKeeper
 	signModeHandler *txsigning.HandlerMap
-	nk              NonceKeeper
+	nk              *keeper.Keeper
 }
 
 func NewSigVerificationDecorator(
 	ak authante.AccountKeeper,
 	signModeHandler *txsigning.HandlerMap,
-	nk NonceKeeper,
+	nk *keeper.Keeper,
 ) SigVerificationDecorator {
 	return SigVerificationDecorator{
 		ak:              ak,
@@ -127,7 +121,7 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 				return ctx, err
 			}
 
-			if sig.Sequence >= params.TimestampNonceCutoff {
+			if sig.Sequence >= types.TimestampNonceCutoff {
 				if err := svd.nk.ValidateAndConsumeWithParams(ctx, signers[i], sig.Sequence, params); err != nil {
 					return ctx, err
 				}
@@ -191,21 +185,4 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 
 func (svd SigVerificationDecorator) verifyUnorderedNonce(_ sdk.Context, _ sdk.TxWithUnordered) error {
 	return errorsmod.Wrap(sdkerrors.ErrNotSupported, "unordered transactions are not supported with x/nonce ante handler")
-}
-
-// NonceKeeperAdapter adapts *keeper.Keeper to the NonceKeeper interface.
-type NonceKeeperAdapter struct {
-	K *keeper.Keeper
-}
-
-func (a NonceKeeperAdapter) GetParams(ctx sdk.Context) (types.Params, error) {
-	return a.K.GetParams(ctx)
-}
-
-func (a NonceKeeperAdapter) ValidateAndConsumeTimestampNonce(ctx sdk.Context, addr []byte, nonceUs uint64) error {
-	return a.K.ValidateAndConsumeTimestampNonce(ctx, addr, nonceUs)
-}
-
-func (a NonceKeeperAdapter) ValidateAndConsumeWithParams(ctx sdk.Context, addr []byte, nonceUs uint64, params types.Params) error {
-	return a.K.ValidateAndConsumeWithParams(ctx, addr, nonceUs, params)
 }

@@ -33,7 +33,8 @@ type Params struct {
 	// relative to block time. Default: 300000000 (5 minutes).
 	FutureWindowUs uint64 `protobuf:"varint,2,opt,name=future_window_us,json=futureWindowUs,proto3" json:"future_window_us,omitempty"`
 	// timestamp_nonce_cutoff is the sequence value threshold. Values >= this are
-	// treated as timestamp nonces (microseconds). Default: 2^40.
+	// treated as timestamp nonces (microseconds). Fixed at 2^40; stored for
+	// serialization but not governance-configurable (protocol constant).
 	TimestampNonceCutoff uint64 `protobuf:"varint,3,opt,name=timestamp_nonce_cutoff,json=timestampNonceCutoff,proto3" json:"timestamp_nonce_cutoff,omitempty"`
 }
 
@@ -93,8 +94,10 @@ func (m *Params) GetTimestampNonceCutoff() uint64 {
 
 // NonceEntry represents a consumed timestamp nonce for genesis export/import.
 type NonceEntry struct {
+	// timestamp_us is the nonce value in microseconds since Unix epoch.
 	TimestampUs uint64 `protobuf:"varint,1,opt,name=timestamp_us,json=timestampUs,proto3" json:"timestamp_us,omitempty"`
-	Address     string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	// address is the bech32-encoded account address that consumed this nonce.
+	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
 }
 
 func (m *NonceEntry) Reset()         { *m = NonceEntry{} }

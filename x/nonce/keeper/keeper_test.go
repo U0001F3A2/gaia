@@ -63,7 +63,7 @@ func (s *KeeperTestSuite) TestParamsRoundTrip() {
 	custom := types.Params{
 		PastWindowUs:         uint64(1 * time.Minute.Microseconds()),
 		FutureWindowUs:       uint64(2 * time.Minute.Microseconds()),
-		TimestampNonceCutoff: 1 << 32,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
 	s.NoError(s.keeper.SetParams(s.ctx, custom))
 
@@ -76,38 +76,32 @@ func (s *KeeperTestSuite) TestValidateAndConsumeTimestampNonce() {
 	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
 	addr := s.addrs[0]
 
-	// Success: nonce at block time
-	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
-	s.NoError(err)
+	// Stateful sequence: consume -> duplicate -> same-ts-different-addr
+	s.NoError(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs))
+	s.ErrorIs(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs), types.ErrNonceDuplicate)
+	s.NoError(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, s.addrs[1], blockTimeUs))
 
-	// Duplicate: same nonce should fail
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, blockTimeUs)
-	s.ErrorIs(err, types.ErrNonceDuplicate)
-
-	// Same timestamp, different address: should succeed
-	addr2 := s.addrs[1]
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr2, blockTimeUs)
-	s.NoError(err)
-
-	// Expired: nonce too far in the past
-	expiredNonce := blockTimeUs - types.DefaultPastWindowUs - 1
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, expiredNonce)
-	s.ErrorIs(err, types.ErrNonceExpired)
-
-	// Future: nonce too far in the future
-	futureNonce := blockTimeUs + types.DefaultFutureWindowUs + 1
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, futureNonce)
-	s.ErrorIs(err, types.ErrNonceTooFarInFuture)
-
-	// Edge: nonce at exact lower bound (should succeed)
-	lowerBound := blockTimeUs - types.DefaultPastWindowUs
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, lowerBound)
-	s.NoError(err)
-
-	// Edge: nonce at exact upper bound (should succeed)
-	upperBound := blockTimeUs + types.DefaultFutureWindowUs
-	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, upperBound)
-	s.NoError(err)
+	// Independent boundary cases (each uses a unique nonce value, no state dependency)
+	tests := []struct {
+		name    string
+		nonce   uint64
+		wantErr error
+	}{
+		{"expired nonce rejected", blockTimeUs - types.DefaultPastWindowUs - 1, types.ErrNonceExpired},
+		{"future nonce rejected", blockTimeUs + types.DefaultFutureWindowUs + 1, types.ErrNonceTooFarInFuture},
+		{"exact lower bound accepted", blockTimeUs - types.DefaultPastWindowUs, nil},
+		{"exact upper bound accepted", blockTimeUs + types.DefaultFutureWindowUs, nil},
+	}
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, tc.nonce)
+			if tc.wantErr == nil {
+				s.NoError(err)
+			} else {
+				s.ErrorIs(err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func (s *KeeperTestSuite) TestPruneExpiredNonces() {
@@ -305,7 +299,7 @@ func (s *KeeperTestSuite) TestKeyOrderingIsTimestampFirst() {
 	// key1 < key2 (earlier timestamp sorts first)
 	s.True(string(key1) < string(key2))
 	// key2 and key3 share timestamp prefix, differ by address
-	s.Equal(key2[:9], key3[:9])
+	s.Equal(key2[:types.NonceKeyMinLen], key3[:types.NonceKeyMinLen])
 }
 
 // --- Prune Edge Cases ---
@@ -358,33 +352,55 @@ func (s *KeeperTestSuite) TestPruneEarlyChainUnderflow() {
 // --- ValidateGenesis Tests ---
 
 func (s *KeeperTestSuite) TestValidateGenesis() {
-	// Valid
-	gs := types.DefaultGenesisState()
-	s.NoError(types.ValidateGenesis(gs))
+	validAddr := s.addrs[0].String()
 
-	// Duplicate entry
-	gs.NonceEntries = []types.NonceEntry{
-		{TimestampUs: 100, Address: "cosmos1abc"},
-		{TimestampUs: 100, Address: "cosmos1abc"},
+	tests := []struct {
+		name        string
+		entries     []types.NonceEntry
+		modParams   func(*types.Params)
+		errContains string
+	}{
+		{"valid default genesis", nil, nil, ""},
+		{"valid genesis with entries", []types.NonceEntry{
+			{TimestampUs: 100, Address: validAddr},
+			{TimestampUs: 200, Address: validAddr},
+		}, nil, ""},
+		{"duplicate entry", []types.NonceEntry{
+			{TimestampUs: 100, Address: validAddr},
+			{TimestampUs: 100, Address: validAddr},
+		}, nil, "duplicate nonce entry"},
+		{"empty address", []types.NonceEntry{
+			{TimestampUs: 100, Address: ""},
+		}, nil, "empty address"},
+		{"invalid bech32 address", []types.NonceEntry{
+			{TimestampUs: 100, Address: "cosmos1invalid"},
+		}, nil, "invalid nonce entry address"},
+		{"zero timestamp", []types.NonceEntry{
+			{TimestampUs: 0, Address: validAddr},
+		}, nil, "zero timestamp"},
+		{"invalid params wrong cutoff", nil, func(p *types.Params) {
+			p.TimestampNonceCutoff = 42
+		}, "protocol constant"},
 	}
-	s.Error(types.ValidateGenesis(gs))
 
-	// Empty address
-	gs.NonceEntries = []types.NonceEntry{
-		{TimestampUs: 100, Address: ""},
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			gs := types.DefaultGenesisState()
+			if tc.entries != nil {
+				gs.NonceEntries = tc.entries
+			}
+			if tc.modParams != nil {
+				tc.modParams(&gs.Params)
+			}
+			err := types.ValidateGenesis(gs)
+			if tc.errContains == "" {
+				s.NoError(err)
+			} else {
+				s.Error(err)
+				s.Contains(err.Error(), tc.errContains)
+			}
+		})
 	}
-	s.Error(types.ValidateGenesis(gs))
-
-	// Zero timestamp
-	gs.NonceEntries = []types.NonceEntry{
-		{TimestampUs: 0, Address: "cosmos1abc"},
-	}
-	s.Error(types.ValidateGenesis(gs))
-
-	// Invalid params
-	gs = types.DefaultGenesisState()
-	gs.Params.TimestampNonceCutoff = 0
-	s.Error(types.ValidateGenesis(gs))
 }
 
 // --- Edge Case: Zero timestamp at genesis block ---
@@ -423,16 +439,15 @@ func (s *KeeperTestSuite) TestValidateTimestampNonce_UpperBoundOverflow() {
 	farFutureCtx := s.ctx.WithBlockTime(time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC))
 	blockTimeUs := uint64(farFutureCtx.BlockTime().UnixMicro())
 
-	// Set future window so large it would overflow
+	// Construct params that would overflow (bypasses Validate via direct call).
 	overflowParams := types.Params{
 		PastWindowUs:         types.DefaultPastWindowUs,
 		FutureWindowUs:       math.MaxUint64 - blockTimeUs + 1, // exactly causes overflow
-		TimestampNonceCutoff: types.DefaultTimestampNonceCutoff,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
 	}
-	s.NoError(s.keeper.SetParams(farFutureCtx, overflowParams))
 
 	// upperBound overflows -- should return an error rather than silently wrapping.
-	err := s.keeper.ValidateAndConsumeTimestampNonce(farFutureCtx, addr, blockTimeUs)
+	err := s.keeper.ValidateAndConsumeWithParams(farFutureCtx, addr, blockTimeUs, overflowParams)
 	s.ErrorIs(err, types.ErrNonceOverflow)
 }
 
@@ -474,15 +489,16 @@ func (s *KeeperTestSuite) TestValidateAndConsumeWithParams() {
 	s.ErrorIs(err, types.ErrNonceDuplicate)
 }
 
-// --- Prune: batched deletion works for > 256 entries ---
+// --- Prune: large number of expired entries ---
 
 func (s *KeeperTestSuite) TestPruneLargeBatch() {
 	addr := s.addrs[0]
 	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
 
-	// Create 300 expired nonces (> batch size of 256).
+	// Create 1100 expired nonces to verify bulk pruning works.
+	const n = 1100
 	expiredBase := blockTimeUs - types.DefaultPastWindowUs - 1_000_000
-	for i := uint64(0); i < 300; i++ {
+	for i := uint64(0); i < n; i++ {
 		s.NoError(s.keeper.SetNonce(s.ctx, addr, expiredBase+i))
 	}
 
@@ -492,7 +508,7 @@ func (s *KeeperTestSuite) TestPruneLargeBatch() {
 	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
 
 	// All expired should be gone
-	for i := uint64(0); i < 300; i++ {
+	for i := uint64(0); i < n; i++ {
 		has, _ := s.keeper.HasNonce(s.ctx, addr, expiredBase+i)
 		s.False(has, "expired nonce %d should be pruned", i)
 	}
@@ -551,39 +567,361 @@ func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Paginated() {
 	s.Len(resp.TimestampNonces, 5)
 }
 
+// --- ExportGenesis edge cases ---
+
+func (s *KeeperTestSuite) TestExportGenesisEmptyState() {
+	// ExportGenesis on a fresh store should return empty entries, not panic.
+	gs := s.keeper.ExportGenesis(s.ctx)
+	s.NotNil(gs)
+	s.Empty(gs.NonceEntries)
+	s.Equal(types.DefaultParams(), gs.Params)
+}
+
 // --- MsgUpdateParams governance test ---
 
 func (s *KeeperTestSuite) TestMsgUpdateParams() {
 	ms := keeper.NewMsgServerImpl(s.keeper)
 
-	// Valid authority
-	newParams := types.Params{
-		PastWindowUs:         uint64(10 * time.Minute.Microseconds()),
-		FutureWindowUs:       uint64(10 * time.Minute.Microseconds()),
-		TimestampNonceCutoff: 1 << 42,
+	tenMin := uint64(10 * time.Minute.Microseconds())
+	tests := []struct {
+		name        string
+		authority   string
+		params      types.Params
+		errContains string
+	}{
+		{"valid params", "cosmos1authority", types.Params{
+			PastWindowUs:         tenMin,
+			FutureWindowUs:       tenMin,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		}, ""},
+		{"wrong authority", "cosmos1wrongauthority", types.DefaultParams(),
+			govtypes.ErrInvalidSigner.Error()},
+		{"wrong cutoff", "cosmos1authority", types.Params{
+			PastWindowUs:         types.DefaultPastWindowUs,
+			FutureWindowUs:       types.DefaultFutureWindowUs,
+			TimestampNonceCutoff: 1 << 42,
+		}, "protocol constant"},
+		{"past window too large", "cosmos1authority", types.Params{
+			PastWindowUs:         types.MaxWindowUs + 1,
+			FutureWindowUs:       types.DefaultFutureWindowUs,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		}, "exceeds max"},
+		{"future window too large", "cosmos1authority", types.Params{
+			PastWindowUs:         types.DefaultPastWindowUs,
+			FutureWindowUs:       types.MaxWindowUs + 1,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		}, "exceeds max"},
 	}
-	_, err := ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1authority",
-		Params:    newParams,
-	})
-	s.NoError(err)
 
-	got, err := s.keeper.GetParams(s.ctx)
-	s.NoError(err)
-	s.Equal(newParams, got)
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			_, err := ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
+				Authority: tc.authority,
+				Params:    tc.params,
+			})
+			if tc.errContains == "" {
+				s.NoError(err)
+				got, err := s.keeper.GetParams(s.ctx)
+				s.NoError(err)
+				s.Equal(tc.params, got)
+			} else {
+				s.Error(err)
+				s.ErrorContains(err, tc.errContains)
+			}
+		})
+	}
+}
 
-	// Wrong authority
-	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1wrongauthority",
-		Params:    types.DefaultParams(),
+// --- H5: Params validation edge cases ---
+
+func (s *KeeperTestSuite) TestParamsValidate() {
+	tests := []struct {
+		name    string
+		params  types.Params
+		wantErr string
+	}{
+		{
+			name:   "valid defaults",
+			params: types.DefaultParams(),
+		},
+		{
+			name: "zero past window",
+			params: types.Params{
+				PastWindowUs:         0,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "past_window_us must be > 0",
+		},
+		{
+			name: "zero future window",
+			params: types.Params{
+				PastWindowUs:         types.DefaultPastWindowUs,
+				FutureWindowUs:       0,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "future_window_us must be > 0",
+		},
+		{
+			name: "past window exceeds max",
+			params: types.Params{
+				PastWindowUs:         types.MaxWindowUs + 1,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "exceeds max",
+		},
+		{
+			name: "future window exceeds max",
+			params: types.Params{
+				PastWindowUs:         types.DefaultPastWindowUs,
+				FutureWindowUs:       types.MaxWindowUs + 1,
+				TimestampNonceCutoff: types.TimestampNonceCutoff,
+			},
+			wantErr: "exceeds max",
+		},
+		{
+			name: "wrong cutoff",
+			params: types.Params{
+				PastWindowUs:         types.DefaultPastWindowUs,
+				FutureWindowUs:       types.DefaultFutureWindowUs,
+				TimestampNonceCutoff: 42,
+			},
+			wantErr: "protocol constant",
+		},
+	}
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			err := tc.params.Validate()
+			if tc.wantErr == "" {
+				s.NoError(err)
+			} else {
+				s.Error(err)
+				s.Contains(err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// --- H4: MsgUpdateParams.ValidateBasic() ---
+
+func (s *KeeperTestSuite) TestMsgUpdateParamsValidateBasic() {
+	validAuthority := s.addrs[0].String()
+
+	tests := []struct {
+		name        string
+		authority   string
+		params      types.Params
+		errContains string
+	}{
+		{"valid message", validAuthority, types.DefaultParams(), ""},
+		{"invalid bech32 authority", "invalid-authority", types.DefaultParams(), "decoding bech32 failed"},
+		{"invalid params", validAuthority, types.Params{
+			PastWindowUs:         0,
+			FutureWindowUs:       types.DefaultFutureWindowUs,
+			TimestampNonceCutoff: types.TimestampNonceCutoff,
+		}, "past_window_us must be > 0"},
+	}
+
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			msg := &types.MsgUpdateParams{Authority: tc.authority, Params: tc.params}
+			err := msg.ValidateBasic()
+			if tc.errContains == "" {
+				s.NoError(err)
+			} else {
+				s.Error(err)
+				s.Contains(err.Error(), tc.errContains)
+			}
+		})
+	}
+}
+
+// --- H7+M7: GRPC query edge cases ---
+
+func (s *KeeperTestSuite) TestGRPCQueryHasNonce_NilRequest() {
+	q := keeper.Querier{Keeper: s.keeper}
+	_, err := q.HasNonce(s.ctx, nil)
+	s.Error(err)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_NilRequest() {
+	q := keeper.Querier{Keeper: s.keeper}
+	_, err := q.NoncesByAddress(s.ctx, nil)
+	s.Error(err)
+}
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_InvalidAddress() {
+	q := keeper.Querier{Keeper: s.keeper}
+	_, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: "invalid-bech32",
 	})
 	s.Error(err)
-	s.ErrorContains(err, govtypes.ErrInvalidSigner.Error())
+}
 
-	// Invalid params (cutoff = 0)
-	_, err = ms.UpdateParams(s.ctx, &types.MsgUpdateParams{
-		Authority: "cosmos1authority",
-		Params:    types.Params{TimestampNonceCutoff: 0},
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_FiltersByAddress() {
+	q := keeper.Querier{Keeper: s.keeper}
+
+	// Use addr0 as target, write nonces under a different address to force scanning.
+	// We write just over the typical page limit to verify scanning terminates.
+	addr0 := s.addrs[0]
+	addr1 := s.addrs[1]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// Write 5 nonces for addr1 (fills scan space) and 1 for addr0
+	for i := uint64(0); i < 5; i++ {
+		s.NoError(s.keeper.SetNonce(s.ctx, addr1, blockTimeUs+i))
+	}
+	s.NoError(s.keeper.SetNonce(s.ctx, addr0, blockTimeUs))
+
+	resp, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address:    addr0.String(),
+		Pagination: &query.PageRequest{Limit: 100},
 	})
-	s.Error(err)
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 1)
+	s.Equal(blockTimeUs, resp.TimestampNonces[0])
+}
+
+// --- L5: NoncesByAddress ordering verification ---
+
+func (s *KeeperTestSuite) TestGRPCQueryNoncesByAddress_Ordering() {
+	q := keeper.Querier{Keeper: s.keeper}
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Insert nonces out of order
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs+2000))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs+1000))
+
+	resp, err := q.NoncesByAddress(s.ctx, &types.QueryNoncesByAddressRequest{
+		Address: addr.String(),
+	})
+	s.NoError(err)
+	s.Len(resp.TimestampNonces, 3)
+
+	// Keys are (prefix + timestamp_be + addr), so iteration should yield ascending timestamps
+	s.Equal(blockTimeUs, resp.TimestampNonces[0], "first nonce should be smallest timestamp")
+	s.Equal(blockTimeUs+1000, resp.TimestampNonces[1])
+	s.Equal(blockTimeUs+2000, resp.TimestampNonces[2], "last nonce should be largest timestamp")
+}
+
+// --- Prune watermark tests ---
+
+func (s *KeeperTestSuite) TestReplayAfterWindowExpansion() {
+	addr := s.addrs[0]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// 1. Consume a nonce 4 minutes in the past (within default 5 min window)
+	fourMinAgo := blockTimeUs - 4*60*1_000_000
+	s.NoError(s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, fourMinAgo))
+
+	// 2. Advance time by 6 minutes so the nonce is now outside the 5 min window
+	advancedCtx := s.ctx.WithBlockTime(s.ctx.BlockTime().Add(6 * time.Minute))
+	s.NoError(s.keeper.PruneExpiredNonces(advancedCtx))
+
+	// Verify nonce was pruned
+	has, _ := s.keeper.HasNonce(advancedCtx, addr, fourMinAgo)
+	s.False(has, "nonce should be pruned")
+
+	// 3. Expand past_window_us from 5 min to 15 min via governance
+	expandedParams := types.Params{
+		PastWindowUs:         15 * 60 * 1_000_000,
+		FutureWindowUs:       types.DefaultFutureWindowUs,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(advancedCtx, expandedParams))
+
+	// 4. Try the same nonce: it's within the expanded window but the watermark blocks it
+	err := s.keeper.ValidateAndConsumeTimestampNonce(advancedCtx, addr, fourMinAgo)
+	s.ErrorIs(err, types.ErrNonceExpired,
+		"replay should be blocked by prune watermark even with expanded window")
+}
+
+func (s *KeeperTestSuite) TestPruneWatermarkMonotonic() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// First prune sets watermark
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+	wm1, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	expectedCutoff := blockTimeUs - types.DefaultPastWindowUs
+	s.Equal(expectedCutoff, wm1)
+
+	// Shrink past window (smaller window -> larger cutoff)
+	smallerWindow := types.Params{
+		PastWindowUs:         1 * 60 * 1_000_000, // 1 min
+		FutureWindowUs:       types.DefaultFutureWindowUs,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(s.ctx, smallerWindow))
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+	wm2, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.True(wm2 >= wm1, "watermark must not decrease")
+
+	// Expand past window (larger window -> smaller cutoff, but watermark stays)
+	largerWindow := types.Params{
+		PastWindowUs:         15 * 60 * 1_000_000, // 15 min
+		FutureWindowUs:       types.DefaultFutureWindowUs,
+		TimestampNonceCutoff: types.TimestampNonceCutoff,
+	}
+	s.NoError(s.keeper.SetParams(s.ctx, largerWindow))
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+	wm3, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.Equal(wm2, wm3, "watermark must not decrease when window expands")
+}
+
+func (s *KeeperTestSuite) TestGenesisRoundTripWithWatermark() {
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	addr := s.addrs[0]
+
+	// Set a nonce and prune to establish watermark
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+	s.NoError(s.keeper.PruneExpiredNonces(s.ctx))
+
+	wm, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.True(wm > 0)
+
+	// Export
+	gs := s.keeper.ExportGenesis(s.ctx)
+	s.Equal(wm, gs.PruneHighWatermarkUs)
+
+	// Import into fresh keeper
+	key := storetypes.NewKVStoreKey(types.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(s.T(), key, storetypes.NewTransientStoreKey("transient_wm"))
+	ctx2 := testCtx.Ctx.WithBlockTime(s.ctx.BlockTime())
+
+	registry := codectypes.NewInterfaceRegistry()
+	cdc := codec.NewProtoCodec(registry)
+	storeService := runtime.NewKVStoreService(key)
+	k2 := keeper.NewKeeper(cdc, storeService, "cosmos1authority")
+	k2.InitGenesis(ctx2, gs)
+
+	wm2, err := k2.GetPruneWatermark(ctx2)
+	s.NoError(err)
+	s.Equal(wm, wm2, "watermark should survive genesis round-trip")
+}
+
+func (s *KeeperTestSuite) TestPruneWatermarkEnforcedInValidation() {
+	addr := s.addrs[0]
+
+	// Manually set a high watermark (simulating past pruning)
+	watermark := uint64(s.ctx.BlockTime().UnixMicro()) - 1*60*1_000_000 // 1 min ago
+	s.NoError(s.keeper.SetPruneWatermark(s.ctx, watermark))
+
+	// Try a nonce that's within the default 5 min window but below the watermark
+	belowWatermark := watermark - 1
+	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, belowWatermark)
+	s.ErrorIs(err, types.ErrNonceExpired,
+		"nonce below watermark should be rejected even if within time window")
+
+	// Nonce at exactly the watermark should also be rejected (< lowerBound after max)
+	// Wait -- watermark IS the lower bound. nonce == lowerBound should pass (>= check)
+	// Actually, the lowerBound check is `nonceUs < lowerBound`, so nonce == watermark passes.
+	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, watermark)
+	s.NoError(err, "nonce at exact watermark should be accepted")
 }

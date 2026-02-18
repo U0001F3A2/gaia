@@ -94,6 +94,29 @@ type testAccount struct {
 	priv cryptotypes.PrivKey
 }
 
+func (s *decoratorTestSuite) sigVerifyHandler() sdk.AnteHandler {
+	svd := nonceante.NewSigVerificationDecorator(
+		s.accountKeeper,
+		s.encCfg.TxConfig.SignModeHandler(),
+		s.nonceKeeper,
+	)
+	return sdk.ChainAnteDecorators(svd)
+}
+
+func (s *decoratorTestSuite) fullChainHandler() sdk.AnteHandler {
+	svd := nonceante.NewSigVerificationDecorator(
+		s.accountKeeper,
+		s.encCfg.TxConfig.SignModeHandler(),
+		s.nonceKeeper,
+	)
+	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
+	return sdk.ChainAnteDecorators(svd, isd)
+}
+
+func (s *decoratorTestSuite) blockTimeUs() uint64 {
+	return uint64(s.ctx.BlockTime().UnixMicro())
+}
+
 func (s *decoratorTestSuite) createAccount(t *testing.T, accNum uint64) testAccount {
 	t.Helper()
 	priv, pub, addr := testdata.KeyTestPubAddr()
@@ -159,15 +182,8 @@ func TestSigVerify_SequentialNonce(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	// Account sequence is 0, sign with sequence 0
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{0}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	ctx := s.ctx.WithIsSigverifyTx(true)
 	_, err := handler(ctx, testTx, false)
@@ -178,15 +194,8 @@ func TestSigVerify_SequentialNonce_WrongSequence(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	// Account sequence is 0, sign with sequence 5 (wrong)
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{5}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	ctx := s.ctx.WithIsSigverifyTx(true)
 	_, err := handler(ctx, testTx, false)
@@ -198,18 +207,10 @@ func TestSigVerify_TimestampNonce(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	// Use timestamp as sequence (>= 2^40 cutoff)
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	blockTimeUs := s.blockTimeUs()
 
-	// simulate=true skips crypto verification, so we can test routing logic
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	_, err := handler(s.ctx, testTx, true) // simulate=true
 	require.NoError(t, err)
@@ -225,20 +226,13 @@ func TestSigVerify_TimestampNonce_RealSignature(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	blockTimeUs := s.blockTimeUs()
 
-	// Real signature (simulate=false): proves crypto verification works with timestamp nonces
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	ctx := s.ctx.WithIsSigverifyTx(true)
-	_, err := handler(ctx, testTx, false) // simulate=false: real crypto verification
+	_, err := handler(ctx, testTx, false)
 	require.NoError(t, err)
 
 	// Verify nonce was consumed
@@ -252,20 +246,11 @@ func TestSigVerify_ExactCutoffBoundary(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	// Sequence = exactly 2^40: should route to timestamp path
-	cutoff := noncetypes.DefaultTimestampNonceCutoff // 1 << 40
-
+	cutoff := noncetypes.TimestampNonceCutoff // 1 << 40
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{cutoff}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	// 2^40 as a timestamp = Jan 2005, well outside the ±5min window around 2025
-	// Should route to timestamp path and fail with ErrNonceExpired
 	_, err := handler(s.ctx, testTx, true)
 	require.ErrorIs(t, err, noncetypes.ErrNonceExpired,
 		"sequence at exact cutoff (2^40) should route to timestamp path and be rejected as expired")
@@ -275,17 +260,9 @@ func TestSigVerify_BelowCutoff_Sequential(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	// Sequence = 2^40 - 1: should route to sequential path
-	belowCutoff := noncetypes.DefaultTimestampNonceCutoff - 1
-
+	belowCutoff := noncetypes.TimestampNonceCutoff - 1
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{belowCutoff}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	// Account sequence is 0, tx sequence is 2^40-1: should fail with sequence mismatch (sequential path)
 	_, err := handler(s.ctx, testTx, true)
@@ -298,14 +275,8 @@ func TestSigVerify_TimestampNonce_Duplicate(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	blockTimeUs := s.blockTimeUs()
+	handler := s.sigVerifyHandler()
 
 	// First tx: succeeds
 	tx1 := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
@@ -313,7 +284,7 @@ func TestSigVerify_TimestampNonce_Duplicate(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second tx with same nonce: fails
-	s.txBuilder = s.clientCtx.TxConfig.NewTxBuilder() // fresh builder
+	s.txBuilder = s.clientCtx.TxConfig.NewTxBuilder()
 	tx2 := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
 	_, err = handler(s.ctx, tx2, true)
 	require.ErrorIs(t, err, noncetypes.ErrNonceDuplicate)
@@ -323,17 +294,9 @@ func TestSigVerify_TimestampNonce_Expired(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-	expired := blockTimeUs - noncetypes.DefaultPastWindowUs - 1
-
+	expired := s.blockTimeUs() - noncetypes.DefaultPastWindowUs - 1
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{expired}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	_, err := handler(s.ctx, testTx, true)
 	require.ErrorIs(t, err, noncetypes.ErrNonceExpired)
@@ -346,22 +309,15 @@ func TestSigVerify_MultiSig_SameTimestamp(t *testing.T) {
 	acct1 := s.createAccount(t, 1000)
 	acct2 := s.createAccount(t, 1001)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	blockTimeUs := s.blockTimeUs()
 
-	// Both signers use the same timestamp nonce
 	testTx := s.createSignedTx(t,
 		[]cryptotypes.PrivKey{acct1.priv, acct2.priv},
 		[]uint64{1000, 1001},
 		[]uint64{blockTimeUs, blockTimeUs},
 		"test-chain",
 	)
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	_, err := handler(s.ctx, testTx, true)
 	require.NoError(t, err)
@@ -372,22 +328,15 @@ func TestSigVerify_MultiSig_DifferentTimestamps(t *testing.T) {
 	acct1 := s.createAccount(t, 1000)
 	acct2 := s.createAccount(t, 1001)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	blockTimeUs := s.blockTimeUs()
 
-	// Signers use different timestamps -- each validated independently
 	testTx := s.createSignedTx(t,
 		[]cryptotypes.PrivKey{acct1.priv, acct2.priv},
 		[]uint64{1000, 1001},
 		[]uint64{blockTimeUs, blockTimeUs + 1},
 		"test-chain",
 	)
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	_, err := handler(s.ctx, testTx, true)
 	require.NoError(t, err)
@@ -458,20 +407,12 @@ func TestFullChain_SequentialTx(t *testing.T) {
 	addr := sdk.AccAddress(acct.priv.PubKey().Address())
 
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{0}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
-	handler := sdk.ChainAnteDecorators(svd, isd)
+	handler := s.fullChainHandler()
 
 	ctx := s.ctx.WithIsSigverifyTx(true)
 	_, err := handler(ctx, testTx, false)
 	require.NoError(t, err)
 
-	// Sequence should be incremented
 	require.Equal(t, uint64(1), s.accountKeeper.GetAccount(s.ctx, addr).GetSequence())
 }
 
@@ -480,25 +421,15 @@ func TestFullChain_TimestampTx(t *testing.T) {
 	acct := s.createAccount(t, 1000)
 	addr := sdk.AccAddress(acct.priv.PubKey().Address())
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	blockTimeUs := s.blockTimeUs()
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
+	handler := s.fullChainHandler()
 
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
-	handler := sdk.ChainAnteDecorators(svd, isd)
-
-	// simulate=true to skip sig verify (timestamp sequence != acc.GetSequence())
-	_, err := handler(s.ctx, testTx, true)
+	_, err := handler(s.ctx, testTx, true) // simulate=true
 	require.NoError(t, err)
 
-	// Sequence should NOT be incremented (timestamp nonce path)
 	require.Equal(t, uint64(0), s.accountKeeper.GetAccount(s.ctx, addr).GetSequence())
 
-	// Nonce should be consumed
 	has, err := s.nonceKeeper.HasNonce(s.ctx, addr, blockTimeUs)
 	require.NoError(t, err)
 	require.True(t, has)
@@ -511,25 +442,16 @@ func TestSigVerify_MixedMultiSig_SequentialAndTimestamp(t *testing.T) {
 	acct1 := s.createAccount(t, 1000) // sequential signer (seq=0)
 	acct2 := s.createAccount(t, 1001) // timestamp signer
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	blockTimeUs := s.blockTimeUs()
 
-	// acct1 uses sequential nonce (0), acct2 uses timestamp nonce
 	testTx := s.createSignedTx(t,
 		[]cryptotypes.PrivKey{acct1.priv, acct2.priv},
 		[]uint64{1000, 1001},
 		[]uint64{0, blockTimeUs},
 		"test-chain",
 	)
+	handler := s.fullChainHandler()
 
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	isd := nonceante.NewIncrementSequenceDecorator(s.accountKeeper)
-	handler := sdk.ChainAnteDecorators(svd, isd)
-
-	// simulate=true: acct1 seq=0 matches account, acct2 seq=blockTimeUs >= cutoff
 	_, err := handler(s.ctx, testTx, true)
 	require.NoError(t, err)
 
@@ -553,17 +475,9 @@ func TestSigVerify_TimestampNonce_ExactFutureBoundary(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-	exactUpper := blockTimeUs + noncetypes.DefaultFutureWindowUs
-
+	exactUpper := s.blockTimeUs() + noncetypes.DefaultFutureWindowUs
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{exactUpper}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	_, err := handler(s.ctx, testTx, true)
 	require.NoError(t, err, "nonce at exact future boundary should be accepted")
@@ -573,18 +487,67 @@ func TestSigVerify_TimestampNonce_PastFutureBoundary(t *testing.T) {
 	s := setupDecoratorTest(t)
 	acct := s.createAccount(t, 1000)
 
-	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
-	pastUpper := blockTimeUs + noncetypes.DefaultFutureWindowUs + 1
-
+	pastUpper := s.blockTimeUs() + noncetypes.DefaultFutureWindowUs + 1
 	testTx := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{pastUpper}, "test-chain")
-
-	svd := nonceante.NewSigVerificationDecorator(
-		s.accountKeeper,
-		s.encCfg.TxConfig.SignModeHandler(),
-		nonceante.NonceKeeperAdapter{K: s.nonceKeeper},
-	)
-	handler := sdk.ChainAnteDecorators(svd)
+	handler := s.sigVerifyHandler()
 
 	_, err := handler(s.ctx, testTx, true)
 	require.ErrorIs(t, err, noncetypes.ErrNonceTooFarInFuture, "nonce past future boundary should be rejected")
+}
+
+// --- H1: Multi-signer rollback test ---
+
+func TestSigVerify_MultiSig_Signer2Fails_Signer1RolledBack(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct1 := s.createAccount(t, 1000)
+	acct2 := s.createAccount(t, 1001)
+
+	blockTimeUs := s.blockTimeUs()
+	expiredNonce := blockTimeUs - noncetypes.DefaultPastWindowUs - 1
+
+	testTx := s.createSignedTx(t,
+		[]cryptotypes.PrivKey{acct1.priv, acct2.priv},
+		[]uint64{1000, 1001},
+		[]uint64{blockTimeUs, expiredNonce},
+		"test-chain",
+	)
+	handler := s.sigVerifyHandler()
+
+	// Use a CacheMultiStore branch (as the real ante handler does)
+	branchedCtx, _ := s.ctx.CacheContext()
+	_, err := handler(branchedCtx, testTx, true)
+	require.ErrorIs(t, err, noncetypes.ErrNonceExpired,
+		"signer2's expired nonce should cause tx failure")
+
+	// Since we did NOT call write() on the branch, signer1's nonce must NOT
+	// be consumed in the original (parent) store.
+	addr1 := sdk.AccAddress(acct1.priv.PubKey().Address())
+	has, err := s.nonceKeeper.HasNonce(s.ctx, addr1, blockTimeUs)
+	require.NoError(t, err)
+	require.False(t, has,
+		"signer1's nonce should be rolled back when signer2 fails (CacheMultiStore discard)")
+}
+
+// --- H2: RecheckTx test ---
+
+func TestSigVerify_RecheckTx_SkipsSigVerify_CatchesDuplicate(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct := s.createAccount(t, 1000)
+
+	blockTimeUs := s.blockTimeUs()
+	handler := s.sigVerifyHandler()
+
+	// First: consume the nonce normally (simulate=true to skip sig verify)
+	tx1 := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
+	_, err := handler(s.ctx, tx1, true)
+	require.NoError(t, err)
+
+	// RecheckTx: IsReCheckTx=true means sig verification is skipped,
+	// but the timestamp nonce duplicate check should still catch it.
+	recheckCtx := s.ctx.WithIsReCheckTx(true)
+	s.txBuilder = s.clientCtx.TxConfig.NewTxBuilder()
+	tx2 := s.createSignedTx(t, []cryptotypes.PrivKey{acct.priv}, []uint64{1000}, []uint64{blockTimeUs}, "test-chain")
+	_, err = handler(recheckCtx, tx2, false)
+	require.ErrorIs(t, err, noncetypes.ErrNonceDuplicate,
+		"RecheckTx should catch duplicate timestamp nonce even without sig verification")
 }

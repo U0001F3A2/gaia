@@ -15,4 +15,10 @@ message GenesisState {
 
   // nonce_entries are all currently active (non-expired) consumed timestamp nonces.
   repeated NonceEntry nonce_entries = 2 [ (gogoproto.nullable) = false ];
+
+  // prune_high_watermark_us is the highest pruning cutoff (microseconds) ever
+  // used by PreBlocker. Monotonically increasing. Prevents replay attacks when
+  // past_window_us is expanded via governance: nonces below this value are always
+  // rejected regardless of the current time window.
+  uint64 prune_high_watermark_us = 3;
 }

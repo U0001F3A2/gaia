@@ -84,7 +84,7 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 	var scanned uint64
 	for ; iter.Valid() && scanned < maxScan; iter.Next() {
 		key := iter.Key()
-		if len(key) < len(prefix) || key[0] != prefix[0] {
+		if len(key) < types.NonceKeyMinLen || key[0] != prefix[0] {
 			break
 		}
 		scanned++
