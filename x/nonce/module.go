@@ -30,6 +30,7 @@ var (
 	_ module.AppModuleSimulation = AppModule{}
 	_ module.HasServices         = AppModule{}
 	_ module.HasGenesis          = AppModule{}
+	_ module.HasInvariants       = AppModule{}
 
 	_ appmodule.AppModule     = AppModule{}
 	_ appmodule.HasPreBlocker = AppModule{}
@@ -87,6 +88,10 @@ func NewAppModule(cdc codec.Codec, keeper *keeper.Keeper, ak authkeeper.AccountK
 
 func (am AppModule) IsOnePerModuleType() {}
 func (am AppModule) IsAppModule()        {}
+
+func (am AppModule) RegisterInvariants(ir sdk.InvariantRegistry) {
+	ir.RegisterRoute(types.ModuleName, "nonces-above-watermark", keeper.AllNoncesAboveWatermarkInvariant(am.keeper))
+}
 
 func (am AppModule) RegisterServices(cfg module.Configurator) {
 	types.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper))
