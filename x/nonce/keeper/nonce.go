@@ -72,10 +72,10 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 	}
 
 	if nonceUs < lowerBound {
-		return types.ErrNonceExpired
+		return errorsmod.Wrapf(types.ErrNonceExpired, "nonce %d < lower bound %d", nonceUs, lowerBound)
 	}
 	if nonceUs > upperBound {
-		return types.ErrNonceTooFarInFuture
+		return errorsmod.Wrapf(types.ErrNonceTooFarInFuture, "nonce %d > upper bound %d", nonceUs, upperBound)
 	}
 
 	has, err := k.HasNonce(ctx, addr, nonceUs)

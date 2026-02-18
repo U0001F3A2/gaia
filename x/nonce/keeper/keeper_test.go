@@ -651,7 +651,7 @@ func (s *KeeperTestSuite) TestParamsValidate() {
 				FutureWindowUs:       types.DefaultFutureWindowUs,
 				TimestampNonceCutoff: types.TimestampNonceCutoff,
 			},
-			wantErr: "past_window_us must be > 0",
+			wantErr: "past_window_us below minimum",
 		},
 		{
 			name: "zero future window",
@@ -660,7 +660,7 @@ func (s *KeeperTestSuite) TestParamsValidate() {
 				FutureWindowUs:       0,
 				TimestampNonceCutoff: types.TimestampNonceCutoff,
 			},
-			wantErr: "future_window_us must be > 0",
+			wantErr: "future_window_us below minimum",
 		},
 		{
 			name: "past window exceeds max",
@@ -720,7 +720,7 @@ func (s *KeeperTestSuite) TestMsgUpdateParamsValidateBasic() {
 			PastWindowUs:         0,
 			FutureWindowUs:       types.DefaultFutureWindowUs,
 			TimestampNonceCutoff: types.TimestampNonceCutoff,
-		}, "past_window_us must be > 0"},
+		}, "past_window_us below minimum"},
 	}
 
 	for _, tc := range tests {

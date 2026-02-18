@@ -16,6 +16,9 @@ const (
 	// Protocol constant, not governance-configurable. Matches dYdX design.
 	TimestampNonceCutoff uint64 = 1 << 40
 
+	// MinWindowUs is the minimum allowed time window (30 seconds in microseconds).
+	MinWindowUs uint64 = 30 * 1_000_000
+
 	// MaxWindowUs caps time windows at 1 hour (microseconds).
 	MaxWindowUs uint64 = 60 * 60 * 1_000_000
 )
@@ -29,11 +32,11 @@ func DefaultParams() Params {
 }
 
 func (p Params) Validate() error {
-	if p.PastWindowUs == 0 {
-		return fmt.Errorf("past_window_us must be > 0")
+	if p.PastWindowUs < MinWindowUs {
+		return fmt.Errorf("past_window_us below minimum (%d < %d)", p.PastWindowUs, MinWindowUs)
 	}
-	if p.FutureWindowUs == 0 {
-		return fmt.Errorf("future_window_us must be > 0")
+	if p.FutureWindowUs < MinWindowUs {
+		return fmt.Errorf("future_window_us below minimum (%d < %d)", p.FutureWindowUs, MinWindowUs)
 	}
 	if p.PastWindowUs > MaxWindowUs {
 		return fmt.Errorf("past_window_us exceeds max (%d > %d)", p.PastWindowUs, MaxWindowUs)
