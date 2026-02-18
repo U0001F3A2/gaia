@@ -7,6 +7,8 @@ import (
 const (
 	ModuleName = "nonce"
 	StoreKey   = ModuleName
+
+	EventTypeUpdateParams = "update_nonce_params"
 )
 
 var (
@@ -52,6 +54,16 @@ func BuildNoncePrefixUpTo(cutoffUs uint64) []byte {
 // NonceIteratorPrefix returns the prefix for iterating all nonce entries.
 func NonceIteratorPrefix() []byte {
 	return NonceKeyPrefix
+}
+
+// NoncePrefixEnd returns the exclusive end bound for iterating all nonce entries.
+// It is the successor of NonceKeyPrefix, ensuring the iterator stays within the
+// nonce key space and does not scan into watermark or other keys.
+func NoncePrefixEnd() []byte {
+	end := make([]byte, len(NonceKeyPrefix))
+	copy(end, NonceKeyPrefix)
+	end[len(end)-1]++
+	return end
 }
 
 // ParseNonceKey extracts (timestampUs, addr) from a full nonce key.

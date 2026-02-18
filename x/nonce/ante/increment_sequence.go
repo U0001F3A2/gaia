@@ -43,11 +43,11 @@ func (isd IncrementSequenceDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, sim
 		return sdk.Context{}, err
 	}
 
-	tsSigners := GetTimestampSigners(ctx)
+	timestampSigners := GetTimestampSigners(ctx)
 
 	for _, signer := range signers {
 		// --- BEGIN FORKED: skip timestamp nonce signers ---
-		if tsSigners != nil && tsSigners[string(signer)] {
+		if timestampSigners != nil && timestampSigners[string(signer)] {
 			continue
 		}
 		// --- END FORKED ---

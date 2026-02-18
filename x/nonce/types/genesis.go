@@ -28,6 +28,9 @@ func ValidateGenesis(gs *GenesisState) error {
 		if entry.TimestampUs == 0 {
 			return fmt.Errorf("nonce entry has zero timestamp")
 		}
+		if gs.PruneHighWatermarkUs > 0 && entry.TimestampUs < gs.PruneHighWatermarkUs {
+			return fmt.Errorf("nonce entry timestamp %d below prune watermark %d", entry.TimestampUs, gs.PruneHighWatermarkUs)
+		}
 		key := fmt.Sprintf("%d/%s", entry.TimestampUs, entry.Address)
 		if _, exists := seen[key]; exists {
 			return fmt.Errorf("duplicate nonce entry: %s", key)

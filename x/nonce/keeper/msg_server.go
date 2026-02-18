@@ -33,7 +33,7 @@ func (ms msgServer) UpdateParams(ctx context.Context, msg *types.MsgUpdateParams
 
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	sdkCtx.EventManager().EmitEvent(sdk.NewEvent(
-		"update_nonce_params",
+		types.EventTypeUpdateParams,
 		sdk.NewAttribute("authority", msg.Authority),
 	))
 

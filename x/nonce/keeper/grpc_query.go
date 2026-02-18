@@ -70,8 +70,9 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 	if req.Pagination != nil && len(req.Pagination.Key) > 0 {
 		start = req.Pagination.Key
 	}
+	end := types.NoncePrefixEnd()
 
-	iter, err := store.Iterator(start, nil)
+	iter, err := store.Iterator(start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -85,8 +86,8 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 	var nextKey []byte
 	for ; iter.Valid() && scanned < maxScan; iter.Next() {
 		key := iter.Key()
-		if len(key) < types.NonceKeyMinLen || key[0] != prefix[0] {
-			break
+		if len(key) < types.NonceKeyMinLen {
+			continue
 		}
 		scanned++
 		tsUs, keyAddr := types.ParseNonceKey(key)
@@ -107,10 +108,7 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 	// If scan budget exhausted while iterator still has keys, set NextKey
 	// so the client knows results may be incomplete and can resume.
 	if scanned >= maxScan && iter.Valid() {
-		key := iter.Key()
-		if len(key) >= types.NonceKeyMinLen && key[0] == prefix[0] {
-			nextKey = key
-		}
+		nextKey = iter.Key()
 	}
 
 	resp := &types.QueryNoncesByAddressResponse{

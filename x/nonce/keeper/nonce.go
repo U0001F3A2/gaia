@@ -41,14 +41,18 @@ func (k Keeper) ValidateAndConsumeTimestampNonce(ctx context.Context, addr []byt
 //
 // Algorithm:
 // 1. Get block time in microseconds
-// 2. Compute lower bound: max(0, blockTimeUs - pastWindowUs) (underflow-safe)
+// 2. Get lower bound: monotonic prune watermark (set by PreBlocker each block)
 // 3. Compute upper bound: blockTimeUs + futureWindowUs
 // 4. Reject if nonce < lower bound (expired) or nonce > upper bound (future)
 // 5. Reject if already consumed (duplicate)
 // 6. Consume: store nonce
 func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, nonceUs uint64, params types.Params) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
-	blockTimeUs := uint64(sdkCtx.BlockTime().UnixMicro())
+	rawBlockTimeUs := sdkCtx.BlockTime().UnixMicro()
+	if rawBlockTimeUs <= 0 {
+		return errorsmod.Wrap(types.ErrNonceExpired, "block time not set or before epoch")
+	}
+	blockTimeUs := uint64(rawBlockTimeUs)
 
 	// Lower bound: the monotonic prune watermark set by PreBlocker each block
 	// to max(blockTime - pastWindow) across all blocks. This handles both
@@ -76,7 +80,7 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 		return err
 	}
 	if has {
-		return types.ErrNonceDuplicate
+		return errorsmod.Wrapf(types.ErrNonceDuplicate, "nonce %d for %s", nonceUs, sdk.AccAddress(addr))
 	}
 
 	return k.SetNonce(ctx, addr, nonceUs)

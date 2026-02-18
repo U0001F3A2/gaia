@@ -89,9 +89,9 @@ func (s *KeeperTestSuite) TestValidateAndConsumeTimestampNonce() {
 		nonce   uint64
 		wantErr error
 	}{
-		{"expired nonce rejected", blockTimeUs - types.DefaultPastWindowUs - 1, types.ErrNonceExpired},
+		{"nonce below watermark rejected", blockTimeUs - types.DefaultPastWindowUs - 1, types.ErrNonceExpired},
 		{"future nonce rejected", blockTimeUs + types.DefaultFutureWindowUs + 1, types.ErrNonceTooFarInFuture},
-		{"exact lower bound accepted", blockTimeUs - types.DefaultPastWindowUs, nil},
+		{"nonce at exact watermark accepted", blockTimeUs - types.DefaultPastWindowUs, nil},
 		{"exact upper bound accepted", blockTimeUs + types.DefaultFutureWindowUs, nil},
 	}
 	for _, tc := range tests {
@@ -113,9 +113,7 @@ func (s *KeeperTestSuite) TestPruneExpiredNonces() {
 	// Set up nonces:
 	// 1. Definite old (expired)
 	oldNonce := blockTimeUs - types.DefaultPastWindowUs - uint64(1*time.Second.Microseconds())
-	// 2. Exact boundary (should be kept because `nonce < cutoff` usually defines expiration, exact match is strictly valid)
-	//    Wait, check logic: usually `cutoff = now - window`. If `nonce < cutoff`, it is expired.
-	//    If `nonce == cutoff`, it is valid.
+	// 2. Exact boundary: nonce at cutoffUs is NOT pruned (iterator end is exclusive). Should survive.
 	boundaryNonce := blockTimeUs - types.DefaultPastWindowUs
 	// 3. Recent (valid)
 	recentNonce := blockTimeUs - uint64(1*time.Minute.Microseconds())
@@ -401,28 +399,36 @@ func (s *KeeperTestSuite) TestValidateTimestampNonce_GenesisBlockTime() {
 	// Fresh keeper with no watermark, simulating a genesis block at epoch.
 	key := storetypes.NewKVStoreKey("nonce_genesis_test")
 	testCtx := testutil.DefaultContextWithDB(s.T(), key, storetypes.NewTransientStoreKey("transient_genesis"))
-	genesisCtx := testCtx.Ctx.WithBlockTime(time.Unix(0, 0))
 
 	cdc := codec.NewProtoCodec(codectypes.NewInterfaceRegistry())
 	k := keeper.NewKeeper(cdc, runtime.NewKVStoreService(key), "cosmos1authority")
-	s.NoError(k.SetParams(genesisCtx, types.DefaultParams()))
 
 	addr := s.addrs[0]
 
-	// Nonce = 0 should pass (watermark=0, upper bound = futureWindow).
+	// Block time at epoch (0): the M2 guard rejects all nonces because
+	// uint64 conversion of negative/zero UnixMicro would be unsafe.
+	genesisCtx := testCtx.Ctx.WithBlockTime(time.Unix(0, 0))
+	s.NoError(k.SetParams(genesisCtx, types.DefaultParams()))
 	err := k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
+	s.ErrorIs(err, types.ErrNonceExpired, "block time at epoch should be rejected")
+
+	// Block time 1 second after epoch: nonces should work normally.
+	earlyCtx := testCtx.Ctx.WithBlockTime(time.Unix(1, 0))
+	s.NoError(k.SetParams(earlyCtx, types.DefaultParams()))
+	earlyBlockTimeUs := uint64(earlyCtx.BlockTime().UnixMicro())
+	err = k.ValidateAndConsumeTimestampNonce(earlyCtx, addr, earlyBlockTimeUs)
 	s.NoError(err)
 
-	// Duplicate at nonce=0
-	err = k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, 0)
+	// Duplicate at same nonce
+	err = k.ValidateAndConsumeTimestampNonce(earlyCtx, addr, earlyBlockTimeUs)
 	s.ErrorIs(err, types.ErrNonceDuplicate)
 
 	// A nonce within future window should also work
-	err = k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs)
+	err = k.ValidateAndConsumeTimestampNonce(earlyCtx, addr, earlyBlockTimeUs+types.DefaultFutureWindowUs)
 	s.NoError(err)
 
 	// A nonce beyond future window should fail
-	err = k.ValidateAndConsumeTimestampNonce(genesisCtx, addr, types.DefaultFutureWindowUs+1)
+	err = k.ValidateAndConsumeTimestampNonce(earlyCtx, addr, earlyBlockTimeUs+types.DefaultFutureWindowUs+1)
 	s.ErrorIs(err, types.ErrNonceTooFarInFuture)
 }
 
@@ -872,17 +878,113 @@ func (s *KeeperTestSuite) TestPruneWatermarkEnforcedInValidation() {
 
 	// Manually set a high watermark (simulating past pruning)
 	watermark := uint64(s.ctx.BlockTime().UnixMicro()) - 1*60*1_000_000 // 1 min ago
-	s.NoError(s.keeper.SetPruneWatermark(s.ctx, watermark))
+	_, err := s.keeper.SetPruneWatermark(s.ctx, watermark)
+	s.NoError(err)
 
 	// Try a nonce that's within the default 5 min window but below the watermark
 	belowWatermark := watermark - 1
-	err := s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, belowWatermark)
+	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, belowWatermark)
 	s.ErrorIs(err, types.ErrNonceExpired,
 		"nonce below watermark should be rejected even if within time window")
 
-	// Nonce at exactly the watermark should also be rejected (< lowerBound after max)
-	// Wait -- watermark IS the lower bound. nonce == lowerBound should pass (>= check)
-	// Actually, the lowerBound check is `nonceUs < lowerBound`, so nonce == watermark passes.
+	// Nonce at exact watermark passes: check is `nonceUs < watermark`, so equal passes.
 	err = s.keeper.ValidateAndConsumeTimestampNonce(s.ctx, addr, watermark)
 	s.NoError(err, "nonce at exact watermark should be accepted")
+}
+
+// --- M5: AllNoncesAboveWatermarkInvariant tests ---
+
+func (s *KeeperTestSuite) TestInvariant_AllNoncesAboveWatermark_Happy() {
+	addr := s.addrs[0]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+
+	// Set a nonce above the watermark (watermark was set by PruneExpiredNonces in SetupTest)
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, blockTimeUs))
+
+	inv := keeper.AllNoncesAboveWatermarkInvariant(s.keeper)
+	msg, broken := inv(s.ctx)
+	s.False(broken, "invariant should hold: %s", msg)
+}
+
+func (s *KeeperTestSuite) TestInvariant_AllNoncesAboveWatermark_Violation() {
+	addr := s.addrs[0]
+
+	wm, err := s.keeper.GetPruneWatermark(s.ctx)
+	s.NoError(err)
+	s.True(wm > 0, "watermark should be set by SetupTest")
+
+	// Bypass validation and directly write a nonce below the watermark
+	s.NoError(s.keeper.SetNonce(s.ctx, addr, wm-1))
+
+	inv := keeper.AllNoncesAboveWatermarkInvariant(s.keeper)
+	msg, broken := inv(s.ctx)
+	s.True(broken, "invariant should be broken when nonce is below watermark: %s", msg)
+	s.Contains(msg, "below prune watermark")
+}
+
+func (s *KeeperTestSuite) TestInvariant_AllNoncesAboveWatermark_NoWatermark() {
+	// Fresh keeper with no watermark set
+	key := storetypes.NewKVStoreKey("nonce_inv_test")
+	testCtx := testutil.DefaultContextWithDB(s.T(), key, storetypes.NewTransientStoreKey("transient_inv"))
+	ctx := testCtx.Ctx.WithBlockTime(s.ctx.BlockTime())
+
+	cdc := codec.NewProtoCodec(codectypes.NewInterfaceRegistry())
+	k := keeper.NewKeeper(cdc, runtime.NewKVStoreService(key), "cosmos1authority")
+	s.NoError(k.SetParams(ctx, types.DefaultParams()))
+
+	inv := keeper.AllNoncesAboveWatermarkInvariant(k)
+	msg, broken := inv(ctx)
+	s.False(broken, "invariant should trivially hold with no watermark: %s", msg)
+	s.Contains(msg, "no watermark set")
+}
+
+// --- M6: PruneExpiredNonces with zero/negative block time ---
+
+func (s *KeeperTestSuite) TestPruneExpiredNonces_ZeroBlockTime() {
+	// Use zero time (before epoch)
+	zeroCtx := s.ctx.WithBlockTime(time.Time{})
+
+	addr := s.addrs[0]
+	blockTimeUs := uint64(s.ctx.BlockTime().UnixMicro())
+	s.NoError(s.keeper.SetNonce(zeroCtx, addr, blockTimeUs))
+
+	// Should return nil without panicking or modifying state
+	s.NoError(s.keeper.PruneExpiredNonces(zeroCtx))
+
+	// Nonce should still exist (nothing was pruned)
+	has, err := s.keeper.HasNonce(zeroCtx, addr, blockTimeUs)
+	s.NoError(err)
+	s.True(has, "nonce should survive when prune runs with zero block time")
+}
+
+// --- L6: ValidateGenesis watermark validation ---
+
+func (s *KeeperTestSuite) TestValidateGenesis_NoncesBelowWatermark() {
+	validAddr := s.addrs[0].String()
+
+	gs := &types.GenesisState{
+		Params: types.DefaultParams(),
+		NonceEntries: []types.NonceEntry{
+			{TimestampUs: 100, Address: validAddr},
+		},
+		PruneHighWatermarkUs: 200, // watermark above nonce
+	}
+	err := types.ValidateGenesis(gs)
+	s.Error(err)
+	s.Contains(err.Error(), "below prune watermark")
+}
+
+func (s *KeeperTestSuite) TestValidateGenesis_NoncesAtWatermark() {
+	validAddr := s.addrs[0].String()
+
+	gs := &types.GenesisState{
+		Params: types.DefaultParams(),
+		NonceEntries: []types.NonceEntry{
+			{TimestampUs: 200, Address: validAddr},
+		},
+		PruneHighWatermarkUs: 200, // watermark equals nonce
+	}
+	// Nonce at exact watermark is valid (validation check is <, not <=)
+	err := types.ValidateGenesis(gs)
+	s.NoError(err)
 }

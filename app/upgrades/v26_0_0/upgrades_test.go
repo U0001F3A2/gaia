@@ -66,12 +66,16 @@ func TestNonceKeeperFunctional(t *testing.T) {
 		Time: now,
 	})
 
+	// Initialize watermark as PreBlocker would in real block processing.
+	err := app.NonceKeeper.PruneExpiredNonces(ctx)
+	require.NoError(t, err)
+
 	priv := secp256k1.GenPrivKey()
 	addr := sdk.AccAddress(priv.PubKey().Address())
 	tsUs := uint64(now.UnixMicro())
 
 	// SetNonce + HasNonce round-trip
-	err := app.NonceKeeper.SetNonce(ctx, addr, tsUs)
+	err = app.NonceKeeper.SetNonce(ctx, addr, tsUs)
 	require.NoError(t, err)
 
 	has, err := app.NonceKeeper.HasNonce(ctx, addr, tsUs)

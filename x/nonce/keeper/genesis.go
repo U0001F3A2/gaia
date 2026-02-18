@@ -24,7 +24,7 @@ func (k Keeper) InitGenesis(ctx sdk.Context, gs *types.GenesisState) {
 	}
 
 	if gs.PruneHighWatermarkUs > 0 {
-		if err := k.SetPruneWatermark(ctx, gs.PruneHighWatermarkUs); err != nil {
+		if _, err := k.SetPruneWatermark(ctx, gs.PruneHighWatermarkUs); err != nil {
 			panic(err)
 		}
 	}
@@ -39,18 +39,17 @@ func (k Keeper) ExportGenesis(ctx sdk.Context) *types.GenesisState {
 	}
 
 	store := k.storeService.OpenKVStore(ctx)
-	iter, err := store.Iterator(types.NonceIteratorPrefix(), nil)
+	iter, err := store.Iterator(types.NonceIteratorPrefix(), types.NoncePrefixEnd())
 	if err != nil {
 		panic(err)
 	}
 	defer iter.Close()
 
 	var entries []types.NonceEntry
-	prefix := types.NonceIteratorPrefix()
 	for ; iter.Valid(); iter.Next() {
 		key := iter.Key()
-		if len(key) < types.NonceKeyMinLen || key[0] != prefix[0] {
-			break
+		if len(key) < types.NonceKeyMinLen {
+			continue
 		}
 		timestampUs, addrBytes := types.ParseNonceKey(key)
 		addr := sdk.AccAddress(addrBytes).String()
