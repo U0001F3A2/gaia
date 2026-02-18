@@ -1,6 +1,7 @@
 package simulation
 
 import (
+	"fmt"
 	"math/rand"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
@@ -19,8 +20,10 @@ import (
 )
 
 const (
-	OpWeightMsgTimestampNonceSend    = "op_weight_msg_timestamp_nonce_send"
-	DefaultWeightTimestampNonceSend  = 30
+	OpWeightMsgTimestampNonceSend         = "op_weight_msg_timestamp_nonce_send"
+	DefaultWeightTimestampNonceSend       = 30
+	OpWeightMsgTimestampNonceDuplicate    = "op_weight_msg_timestamp_nonce_duplicate"
+	DefaultWeightTimestampNonceDuplicate  = 5
 )
 
 // WeightedOperations returns simulation operations for the x/nonce module.
@@ -36,13 +39,19 @@ func WeightedOperations(
 	bk bankkeeper.Keeper,
 	nk *keeper.Keeper,
 ) []simtypes.WeightedOperation {
-	var weight int
-	appParams.GetOrGenerate(OpWeightMsgTimestampNonceSend, &weight, nil, func(_ *rand.Rand) {
-		weight = DefaultWeightTimestampNonceSend
+	var sendWeight int
+	appParams.GetOrGenerate(OpWeightMsgTimestampNonceSend, &sendWeight, nil, func(_ *rand.Rand) {
+		sendWeight = DefaultWeightTimestampNonceSend
+	})
+
+	var dupWeight int
+	appParams.GetOrGenerate(OpWeightMsgTimestampNonceDuplicate, &dupWeight, nil, func(_ *rand.Rand) {
+		dupWeight = DefaultWeightTimestampNonceDuplicate
 	})
 
 	return []simtypes.WeightedOperation{
-		xsim.NewWeightedOperation(weight, SimulateTimestampNonceSend(txGen, ak, bk, nk)),
+		xsim.NewWeightedOperation(sendWeight, SimulateTimestampNonceSend(txGen, ak, bk, nk)),
+		xsim.NewWeightedOperation(dupWeight, SimulateTimestampNonceDuplicate(txGen, ak, bk, nk)),
 	}
 }
 
@@ -137,7 +146,8 @@ func SimulateTimestampNonceSend(
 
 // SimulateTimestampNonceDuplicate creates two transactions with the same
 // timestamp nonce from the same account. The first should succeed and the
-// second should fail with ErrNonceDuplicate.
+// second should fail with ErrNonceDuplicate. This is a negative test that
+// verifies the duplicate-detection invariant holds during simulation.
 func SimulateTimestampNonceDuplicate(
 	txGen client.TxConfig,
 	ak authkeeper.AccountKeeper,
@@ -166,7 +176,6 @@ func SimulateTimestampNonceDuplicate(
 			return simtypes.NoOpMsg(types.ModuleName, msgType, "no spendable coins"), nil, nil
 		}
 
-		// use a small fixed amount so both txs can afford it
 		sendCoin := sdk.NewInt64Coin(spendable[0].Denom, 1)
 		if !spendable.IsAllGTE(sdk.NewCoins(sendCoin)) {
 			return simtypes.NoOpMsg(types.ModuleName, msgType, "insufficient balance"), nil, nil
@@ -202,10 +211,10 @@ func SimulateTimestampNonceDuplicate(
 		}
 		_, _, err = app.SimTxFinalizeBlock(txGen.TxEncoder(), tx2)
 		if err == nil {
-			// this would be a bug -- duplicate nonce should be rejected
-			return simtypes.NoOpMsg(types.ModuleName, msgType, "BUG: duplicate nonce accepted"), nil, nil
+			return simtypes.OperationMsg{}, nil, fmt.Errorf("INVARIANT VIOLATION: duplicate timestamp nonce accepted for %s at nonce %d", from.Address, blockTimeUs)
 		}
 
 		return simtypes.NewOperationMsgBasic(types.ModuleName, msgType, "duplicate correctly rejected", true, nil), nil, nil
 	}
 }
+

@@ -3,7 +3,6 @@ package simulation
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 
 	"github.com/cosmos/cosmos-sdk/types/module"
 
@@ -38,13 +37,3 @@ func RandomizedGenState(simState *module.SimulationState) {
 	simState.GenState[types.ModuleName] = simState.Cdc.MustMarshalJSON(&genesis)
 }
 
-// RandomParams returns random nonce module params for property testing.
-func RandomParams(r *rand.Rand) types.Params {
-	pastMinutes := r.Intn(10) + 1
-	futureMinutes := r.Intn(10) + 1
-	return types.Params{
-		PastWindowUs:         uint64(pastMinutes) * 60 * 1_000_000,
-		FutureWindowUs:       uint64(futureMinutes) * 60 * 1_000_000,
-		TimestampNonceCutoff: types.TimestampNonceCutoff,
-	}
-}
