@@ -82,6 +82,7 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 	const maxScan = 50_000
 	var nonces []uint64
 	var scanned uint64
+	var nextKey []byte
 	for ; iter.Valid() && scanned < maxScan; iter.Next() {
 		key := iter.Key()
 		if len(key) < types.NonceKeyMinLen || key[0] != prefix[0] {
@@ -103,8 +104,21 @@ func (q Querier) NoncesByAddress(ctx context.Context, req *types.QueryNoncesByAd
 		nonces = append(nonces, tsUs)
 	}
 
-	return &types.QueryNoncesByAddressResponse{
+	// If scan budget exhausted while iterator still has keys, set NextKey
+	// so the client knows results may be incomplete and can resume.
+	if scanned >= maxScan && iter.Valid() {
+		key := iter.Key()
+		if len(key) >= types.NonceKeyMinLen && key[0] == prefix[0] {
+			nextKey = key
+		}
+	}
+
+	resp := &types.QueryNoncesByAddressResponse{
 		TimestampNonces: nonces,
 		Pagination:      &query.PageResponse{Total: uint64(len(nonces))},
-	}, nil
+	}
+	if nextKey != nil {
+		resp.Pagination.NextKey = nextKey
+	}
+	return resp, nil
 }

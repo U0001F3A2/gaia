@@ -176,6 +176,53 @@ func (s *decoratorTestSuite) createSignedTx(
 	return s.txBuilder.GetTx()
 }
 
+func (s *decoratorTestSuite) createSignedTxWithMode(
+	t *testing.T, privs []cryptotypes.PrivKey,
+	accNums, accSeqs []uint64, chainID string,
+	signMode signing.SignMode,
+) xauthsigning.Tx {
+	t.Helper()
+
+	addrs := make([]sdk.AccAddress, len(privs))
+	for i, p := range privs {
+		addrs[i] = sdk.AccAddress(p.PubKey().Address())
+	}
+	msgs := []sdk.Msg{testdata.NewTestMsg(addrs...)}
+	require.NoError(t, s.txBuilder.SetMsgs(msgs...))
+	s.txBuilder.SetFeeAmount(sdk.NewCoins(sdk.NewInt64Coin("atom", 150)))
+	s.txBuilder.SetGasLimit(200000)
+
+	var sigsV2 []signing.SignatureV2
+	for i, priv := range privs {
+		sigsV2 = append(sigsV2, signing.SignatureV2{
+			PubKey:   priv.PubKey(),
+			Data:     &signing.SingleSignatureData{SignMode: signMode},
+			Sequence: accSeqs[i],
+		})
+	}
+	require.NoError(t, s.txBuilder.SetSignatures(sigsV2...))
+
+	sigsV2 = nil
+	for i, priv := range privs {
+		signerData := xauthsigning.SignerData{
+			Address:       sdk.AccAddress(priv.PubKey().Address()).String(),
+			ChainID:       chainID,
+			AccountNumber: accNums[i],
+			Sequence:      accSeqs[i],
+			PubKey:        priv.PubKey(),
+		}
+		sigV2, err := tx.SignWithPrivKey(
+			s.ctx, signMode, signerData,
+			s.txBuilder, priv, s.clientCtx.TxConfig, accSeqs[i],
+		)
+		require.NoError(t, err)
+		sigsV2 = append(sigsV2, sigV2)
+	}
+	require.NoError(t, s.txBuilder.SetSignatures(sigsV2...))
+
+	return s.txBuilder.GetTx()
+}
+
 // --- SigVerificationDecorator Tests ---
 
 func TestSigVerify_SequentialNonce(t *testing.T) {
@@ -550,4 +597,46 @@ func TestSigVerify_RecheckTx_SkipsSigVerify_CatchesDuplicate(t *testing.T) {
 	_, err = handler(recheckCtx, tx2, false)
 	require.ErrorIs(t, err, noncetypes.ErrNonceDuplicate,
 		"RecheckTx should catch duplicate timestamp nonce even without sig verification")
+}
+
+// --- H18: Sign mode agnostic tests ---
+
+func TestSigVerify_TimestampNonce_AminoJSON(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct := s.createAccount(t, 1000)
+
+	blockTimeUs := s.blockTimeUs()
+
+	testTx := s.createSignedTxWithMode(t,
+		[]cryptotypes.PrivKey{acct.priv},
+		[]uint64{1000}, []uint64{blockTimeUs},
+		"test-chain",
+		signing.SignMode_SIGN_MODE_LEGACY_AMINO_JSON,
+	)
+	handler := s.sigVerifyHandler()
+
+	_, err := handler(s.ctx, testTx, true)
+	require.NoError(t, err, "timestamp nonce should work with SIGN_MODE_LEGACY_AMINO_JSON")
+
+	addr := sdk.AccAddress(acct.priv.PubKey().Address())
+	has, err := s.nonceKeeper.HasNonce(s.ctx, addr, blockTimeUs)
+	require.NoError(t, err)
+	require.True(t, has, "nonce should be consumed regardless of sign mode")
+}
+
+func TestSigVerify_SequentialNonce_AminoJSON(t *testing.T) {
+	s := setupDecoratorTest(t)
+	acct := s.createAccount(t, 1000)
+
+	testTx := s.createSignedTxWithMode(t,
+		[]cryptotypes.PrivKey{acct.priv},
+		[]uint64{1000}, []uint64{0},
+		"test-chain",
+		signing.SignMode_SIGN_MODE_LEGACY_AMINO_JSON,
+	)
+	handler := s.sigVerifyHandler()
+
+	ctx := s.ctx.WithIsSigverifyTx(true)
+	_, err := handler(ctx, testTx, false)
+	require.NoError(t, err, "sequential nonce should work with SIGN_MODE_LEGACY_AMINO_JSON")
 }

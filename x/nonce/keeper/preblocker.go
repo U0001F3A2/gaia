@@ -54,6 +54,8 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 	// Delete in fixed-size batches to bound peak memory under high throughput.
 	// Each key is ~30 bytes (prefix + timestamp + address), so 16384 keys ≈ 480 KB.
 	// Sized to handle ~6000 nonces/block (1000 TPS * 6s block) in a single pass.
+	// All expired nonces must be pruned to maintain consistency with the watermark;
+	// partial pruning would leave nonces below the watermark, breaking the invariant.
 	const batchSize = 16_384
 	batch := make([][]byte, 0, batchSize)
 	totalPruned := 0
