@@ -372,68 +372,53 @@ func (s *KeeperTestSuite) TestPruneEarlyChainUnderflow() {
 func (s *KeeperTestSuite) TestValidateGenesis() {
 	validAddr := s.addrs[0].String()
 
-	s.Run("valid default genesis", func() {
-		gs := types.DefaultGenesisState()
-		s.NoError(types.ValidateGenesis(gs))
-	})
-
-	s.Run("valid genesis with entries", func() {
-		gs := types.DefaultGenesisState()
-		gs.NonceEntries = []types.NonceEntry{
+	tests := []struct {
+		name        string
+		entries     []types.NonceEntry
+		modParams   func(*types.Params)
+		errContains string
+	}{
+		{"valid default genesis", nil, nil, ""},
+		{"valid genesis with entries", []types.NonceEntry{
 			{TimestampUs: 100, Address: validAddr},
 			{TimestampUs: 200, Address: validAddr},
-		}
-		s.NoError(types.ValidateGenesis(gs))
-	})
-
-	s.Run("duplicate entry", func() {
-		gs := types.DefaultGenesisState()
-		gs.NonceEntries = []types.NonceEntry{
+		}, nil, ""},
+		{"duplicate entry", []types.NonceEntry{
 			{TimestampUs: 100, Address: validAddr},
 			{TimestampUs: 100, Address: validAddr},
-		}
-		err := types.ValidateGenesis(gs)
-		s.Error(err)
-		s.Contains(err.Error(), "duplicate nonce entry")
-	})
-
-	s.Run("empty address", func() {
-		gs := types.DefaultGenesisState()
-		gs.NonceEntries = []types.NonceEntry{
+		}, nil, "duplicate nonce entry"},
+		{"empty address", []types.NonceEntry{
 			{TimestampUs: 100, Address: ""},
-		}
-		err := types.ValidateGenesis(gs)
-		s.Error(err)
-		s.Contains(err.Error(), "empty address")
-	})
-
-	s.Run("invalid bech32 address", func() {
-		gs := types.DefaultGenesisState()
-		gs.NonceEntries = []types.NonceEntry{
+		}, nil, "empty address"},
+		{"invalid bech32 address", []types.NonceEntry{
 			{TimestampUs: 100, Address: "cosmos1invalid"},
-		}
-		err := types.ValidateGenesis(gs)
-		s.Error(err)
-		s.Contains(err.Error(), "invalid nonce entry address")
-	})
-
-	s.Run("zero timestamp", func() {
-		gs := types.DefaultGenesisState()
-		gs.NonceEntries = []types.NonceEntry{
+		}, nil, "invalid nonce entry address"},
+		{"zero timestamp", []types.NonceEntry{
 			{TimestampUs: 0, Address: validAddr},
-		}
-		err := types.ValidateGenesis(gs)
-		s.Error(err)
-		s.Contains(err.Error(), "zero timestamp")
-	})
+		}, nil, "zero timestamp"},
+		{"invalid params wrong cutoff", nil, func(p *types.Params) {
+			p.TimestampNonceCutoff = 42
+		}, "protocol constant"},
+	}
 
-	s.Run("invalid params wrong cutoff", func() {
-		gs := types.DefaultGenesisState()
-		gs.Params.TimestampNonceCutoff = 42
-		err := types.ValidateGenesis(gs)
-		s.Error(err)
-		s.Contains(err.Error(), "protocol constant")
-	})
+	for _, tc := range tests {
+		s.Run(tc.name, func() {
+			gs := types.DefaultGenesisState()
+			if tc.entries != nil {
+				gs.NonceEntries = tc.entries
+			}
+			if tc.modParams != nil {
+				tc.modParams(&gs.Params)
+			}
+			err := types.ValidateGenesis(gs)
+			if tc.errContains == "" {
+				s.NoError(err)
+			} else {
+				s.Error(err)
+				s.Contains(err.Error(), tc.errContains)
+			}
+		})
+	}
 }
 
 // --- Edge Case: Zero timestamp at genesis block ---
