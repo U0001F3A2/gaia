@@ -34,17 +34,9 @@ func AllNoncesAboveWatermarkInvariant(k *Keeper) sdk.Invariant {
 		}
 		defer iter.Close()
 
-		count := 0
-		for ; iter.Valid(); iter.Next() {
-			count++
-			if count > 10 {
-				break // limit output; one violation is enough
-			}
-		}
-
-		if count > 0 {
+		if iter.Valid() {
 			return sdk.FormatInvariant(types.ModuleName, "nonces-above-watermark",
-				fmt.Sprintf("found %d nonce(s) below prune watermark %d", count, watermark)), true
+				fmt.Sprintf("found nonce(s) below prune watermark %d", watermark)), true
 		}
 
 		return sdk.FormatInvariant(types.ModuleName, "nonces-above-watermark",
