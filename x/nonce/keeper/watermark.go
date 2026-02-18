@@ -26,15 +26,15 @@ func (k Keeper) GetPruneWatermark(ctx context.Context) (uint64, error) {
 }
 
 // SetPruneWatermark stores the pruning cutoff. The watermark is monotonically
-// increasing: attempts to set a value lower than the current watermark return
-// an error to prevent replay of already-pruned nonces.
+// increasing: if cutoffUs <= the current watermark, the write is silently
+// skipped to prevent replay of already-pruned nonces.
 func (k Keeper) SetPruneWatermark(ctx context.Context, cutoffUs uint64) error {
 	existing, err := k.GetPruneWatermark(ctx)
 	if err != nil {
 		return err
 	}
-	if cutoffUs < existing {
-		return fmt.Errorf("prune watermark regression: new %d < existing %d", cutoffUs, existing)
+	if cutoffUs <= existing {
+		return nil
 	}
 	store := k.storeService.OpenKVStore(ctx)
 	bz := make([]byte, 8)

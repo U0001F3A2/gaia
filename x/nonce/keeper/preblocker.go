@@ -35,14 +35,8 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 
 	// Update monotonic high watermark to prevent replay attacks if
 	// past_window_us is later expanded via governance.
-	existing, err := k.GetPruneWatermark(ctx)
-	if err != nil {
+	if err := k.SetPruneWatermark(ctx, cutoffUs); err != nil {
 		return err
-	}
-	if cutoffUs > existing {
-		if err := k.SetPruneWatermark(ctx, cutoffUs); err != nil {
-			return err
-		}
 	}
 
 	store := k.storeService.OpenKVStore(ctx)
