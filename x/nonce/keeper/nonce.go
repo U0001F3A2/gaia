@@ -48,6 +48,8 @@ func (k Keeper) ValidateAndConsumeTimestampNonce(ctx context.Context, addr []byt
 // 6. Consume: store nonce
 func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, nonceUs uint64, params types.Params) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	// assumes positive blocktime. if it's ever negative, the 2^40 timestamp cutoff
+	// will be infeasible anyway.
 	blockTimeUs := uint64(sdkCtx.BlockTime().UnixMicro())
 
 	// Underflow-safe lower bound
@@ -62,9 +64,7 @@ func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, n
 	if err != nil {
 		return err
 	}
-	if watermark > lowerBound {
-		lowerBound = watermark
-	}
+	lowerBound = max(lowerBound, watermark)
 
 	upperBound := blockTimeUs + params.FutureWindowUs
 	if upperBound < blockTimeUs {

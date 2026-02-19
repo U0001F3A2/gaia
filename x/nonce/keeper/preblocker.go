@@ -27,11 +27,12 @@ func (k Keeper) PruneExpiredNonces(ctx context.Context) error {
 	var cutoffUs uint64
 	if blockTimeUs > params.PastWindowUs {
 		cutoffUs = blockTimeUs - params.PastWindowUs
+	} else {
+		return nil // doesn't need pruning
 	}
 
-	if cutoffUs == 0 {
-		return nil
-	}
+	// don't need to set cutoff to watermark here since we reject any
+	// timestamp nonce below watermark in antehandler
 
 	// Update monotonic high watermark to prevent replay attacks if
 	// past_window_us is later expanded via governance.
