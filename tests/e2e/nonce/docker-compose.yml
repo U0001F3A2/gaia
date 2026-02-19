@@ -1,0 +1,38 @@
+services:
+  node:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["/bin/bash", "/scripts/start_node.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:26657/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - chain-data:/root/.gaia
+      - ./scripts:/scripts:ro
+    ports:
+      - "26657:26657"
+      - "1317:1317"
+      - "9090:9090"
+
+  test-runner:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["/bin/bash", "/scripts/wait_for_node.sh", "node:26657", "/bin/bash", "/e2e/run_tests.sh"]
+    depends_on:
+      node:
+        condition: service_healthy
+    volumes:
+      - chain-data:/root/.gaia
+      - ./scripts:/scripts:ro
+      - ./e2e:/e2e:ro
+    environment:
+      - NODE_URL=http://node:26657
+      - GRPC_URL=node:9090
+      - GAIA_HOME=/root/.gaia
+
+volumes:
+  chain-data:

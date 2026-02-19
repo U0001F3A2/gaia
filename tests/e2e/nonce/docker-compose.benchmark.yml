@@ -1,0 +1,42 @@
+# Benchmark mode: single-node chain with spammer.
+# A single-node setup measures the full tx lifecycle (mempool, ante handler,
+# block execution) which is sufficient for measuring nonce throughput.
+# For multi-validator consensus benchmarks, use gaiad testnet init-files.
+
+services:
+  node:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["/bin/bash", "/scripts/start_node.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:26657/status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - bench-data:/root/.gaia
+      - ./scripts:/scripts:ro
+    ports:
+      - "26657:26657"
+      - "9090:9090"
+
+  spammer:
+    build:
+      context: ../../..
+      dockerfile: tests/e2e/nonce/Dockerfile
+    command: ["/bin/bash", "/scripts/wait_for_node.sh", "node:26657", "/bin/bash", "/benchmark/run_benchmark.sh"]
+    depends_on:
+      node:
+        condition: service_healthy
+    volumes:
+      - bench-data:/root/.gaia
+      - ./scripts:/scripts:ro
+      - ./benchmark:/benchmark:ro
+      - ./benchmark/results:/tmp/benchmark-results
+    environment:
+      - GRPC_ENDPOINTS=node:9090
+      - GAIA_HOME=/root/.gaia
+
+volumes:
+  bench-data:
