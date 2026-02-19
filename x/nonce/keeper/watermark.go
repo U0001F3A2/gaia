@@ -1,0 +1,40 @@
+package keeper
+
+import (
+	"context"
+	"encoding/binary"
+	"fmt"
+
+	"github.com/cosmos/gaia/v26/x/nonce/types"
+)
+
+// GetPruneWatermark returns the highest pruning cutoff (microseconds) ever used.
+// Returns 0 if no pruning has occurred yet (new chain or fresh genesis).
+func (k Keeper) GetPruneWatermark(ctx context.Context) (uint64, error) {
+	store := k.storeService.OpenKVStore(ctx)
+	bz, err := store.Get(types.PruneWatermarkKey)
+	if bz == nil || err != nil {
+		return 0, err // if err != nil, we care about the error, so we can do this
+	}
+	if len(bz) < 8 {
+		return 0, fmt.Errorf("corrupted prune watermark: expected 8 bytes, got %d", len(bz))
+	}
+	return binary.BigEndian.Uint64(bz), nil
+}
+
+// SetPruneWatermark stores the pruning cutoff. The watermark is monotonically
+// increasing: if cutoffUs <= the current watermark, the write is silently
+// skipped to prevent replay of already-pruned nonces.
+func (k Keeper) SetPruneWatermark(ctx context.Context, cutoffUs uint64) error {
+	existing, err := k.GetPruneWatermark(ctx)
+	if err != nil {
+		return err
+	}
+	if cutoffUs <= existing {
+		return nil
+	}
+	store := k.storeService.OpenKVStore(ctx)
+	bz := make([]byte, 8)
+	binary.BigEndian.PutUint64(bz, cutoffUs)
+	return store.Set(types.PruneWatermarkKey, bz)
+}

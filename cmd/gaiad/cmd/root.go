@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cast"
@@ -51,6 +52,8 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
+
+	noncecli "github.com/cosmos/gaia/v26/x/nonce/client/cli"
 
 	"github.com/CosmWasm/wasmd/x/wasm"
 	wasmkeeper "github.com/CosmWasm/wasmd/x/wasm/keeper"
@@ -132,6 +135,23 @@ func NewRootCmd() *cobra.Command {
 
 			if err = client.SetCmdClientContextHandler(initClientCtx, cmd); err != nil {
 				return err
+			}
+
+			// x/nonce: wrap AccountRetriever when --timestamp flag is set
+			if useTimestamp, _ := cmd.Flags().GetBool(noncecli.FlagTimestamp); useTimestamp {
+				clientCtx := client.GetClientContextFromCmd(cmd)
+				if clientCtx.Offline {
+					return fmt.Errorf("--timestamp cannot be used with --offline")
+				}
+				ts := uint64(time.Now().UnixMicro())
+				fmt.Fprintf(cmd.ErrOrStderr(), "Using timestamp nonce: %d\n", ts)
+				wrapped := &noncecli.TimestampAccountRetriever{
+					Inner:     clientCtx.AccountRetriever,
+					Timestamp: ts,
+				}
+				if err := client.SetCmdClientContext(cmd, clientCtx.WithAccountRetriever(wrapped)); err != nil {
+					return err
+				}
 			}
 
 			customAppTemplate, customAppConfig := initAppConfig()
@@ -291,6 +311,8 @@ func txCommand(basicManager module.BasicManager) *cobra.Command {
 	basicManager.AddTxCommands(cmd)
 
 	cmd.PersistentFlags().String(flags.FlagChainID, "", "The network chain ID")
+
+	noncecli.AddTimestampFlag(cmd)
 
 	return cmd
 }

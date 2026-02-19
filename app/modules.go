@@ -66,6 +66,8 @@ import (
 	liquidtypes "github.com/cosmos/gaia/v26/x/liquid/types"
 	"github.com/cosmos/gaia/v26/x/metaprotocols"
 	metaprotocolstypes "github.com/cosmos/gaia/v26/x/metaprotocols/types"
+	"github.com/cosmos/gaia/v26/x/nonce"
+	noncetypes "github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
 var maccPerms = map[string][]string{
@@ -125,6 +127,7 @@ func appModules(
 		tendermint.NewAppModule(tmLightClientModule),
 		liquid.NewAppModule(appCodec, app.LiquidKeeper, app.AccountKeeper, app.BankKeeper, app.StakingKeeper),
 		tokenfactory.NewAppModule(app.TokenFactoryKeeper, app.AccountKeeper, app.BankKeeper, app.GetSubspace(tokenfactorytypes.ModuleName)),
+		nonce.NewAppModule(appCodec, app.NonceKeeper, app.AccountKeeper, app.BankKeeper),
 	}
 }
 
@@ -168,6 +171,7 @@ func simulationModules(
 		ibc.NewAppModule(app.IBCKeeper),
 		app.TransferModule,
 		app.ICAModule,
+		nonce.NewAppModule(appCodec, app.NonceKeeper, app.AccountKeeper, app.BankKeeper),
 	}
 }
 
@@ -208,6 +212,7 @@ func orderBeginBlockers() []string {
 		consensusparamtypes.ModuleName,
 		metaprotocolstypes.ModuleName,
 		liquidtypes.ModuleName,
+		noncetypes.ModuleName,
 		tokenfactorytypes.ModuleName,
 		wasmtypes.ModuleName,
 		ibcwasmtypes.ModuleName,
@@ -248,6 +253,7 @@ func orderEndBlockers() []string {
 		providertypes.ModuleName,
 		consensusparamtypes.ModuleName,
 		metaprotocolstypes.ModuleName,
+		noncetypes.ModuleName,
 		tokenfactorytypes.ModuleName,
 		wasmtypes.ModuleName,
 		ibcwasmtypes.ModuleName,
@@ -295,6 +301,7 @@ func orderInitBlockers() []string {
 		wasmtypes.ModuleName,
 		ibcwasmtypes.ModuleName,
 		liquidtypes.ModuleName,
+		noncetypes.ModuleName,
 		tokenfactorytypes.ModuleName,
 		// crisis needs to be last so that the genesis state is consistent
 		// when it checks invariants

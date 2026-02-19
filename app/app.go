@@ -72,6 +72,7 @@ import (
 	"github.com/cosmos/gaia/v26/app/keepers"
 	"github.com/cosmos/gaia/v26/app/upgrades"
 	v260 "github.com/cosmos/gaia/v26/app/upgrades/v26_0_0"
+	noncetypes "github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
 var (
@@ -221,6 +222,7 @@ func NewGaiaApp(
 	app.mm.SetOrderPreBlockers(
 		upgradetypes.ModuleName,
 		authtypes.ModuleName,
+		noncetypes.ModuleName,
 	)
 	// During begin block slashing happens after distr.BeginBlocker so that
 	// there is nothing left over in the validator fee pool, so as to keep the
@@ -291,6 +293,7 @@ func NewGaiaApp(
 			TxFeeChecker: func(ctx sdk.Context, tx sdk.Tx) (sdk.Coins, int64, error) {
 				return minTxFeesChecker(ctx, tx, *app.FeeMarketKeeper)
 			},
+			NonceKeeper: app.NonceKeeper,
 		},
 	)
 	if err != nil {

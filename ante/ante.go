@@ -24,6 +24,8 @@ import (
 	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
 
 	gaiaerrors "github.com/cosmos/gaia/v26/types/errors"
+	nonceante "github.com/cosmos/gaia/v26/x/nonce/ante"
+	noncekeeper "github.com/cosmos/gaia/v26/x/nonce/keeper"
 )
 
 // UseFeeMarketDecorator to make the integration testing easier: we can switch off its ante and post decorators with this flag
@@ -46,6 +48,7 @@ type HandlerOptions struct {
 	TxFeeChecker          ante.TxFeeChecker
 	TXCounterStoreService corestoretypes.KVStoreService
 	WasmConfig            *wasmtypes.NodeConfig
+	NonceKeeper           *noncekeeper.Keeper
 }
 
 func NewAnteHandler(opts HandlerOptions) (sdk.AnteHandler, error) {
@@ -68,6 +71,9 @@ func NewAnteHandler(opts HandlerOptions) (sdk.AnteHandler, error) {
 	if opts.StakingKeeper == nil {
 		return nil, errorsmod.Wrap(gaiaerrors.ErrNotFound, "staking param store is required for AnteHandler")
 	}
+	if opts.NonceKeeper == nil {
+		return nil, errorsmod.Wrap(gaiaerrors.ErrLogic, "Nonce keeper is required for AnteHandler")
+	}
 
 	sigGasConsumer := opts.SigGasConsumer
 	if sigGasConsumer == nil {
@@ -88,8 +94,8 @@ func NewAnteHandler(opts HandlerOptions) (sdk.AnteHandler, error) {
 		ante.NewSetPubKeyDecorator(opts.AccountKeeper), // SetPubKeyDecorator must be called before all signature verification decorators
 		ante.NewValidateSigCountDecorator(opts.AccountKeeper),
 		ante.NewSigGasConsumeDecorator(opts.AccountKeeper, sigGasConsumer),
-		ante.NewSigVerificationDecorator(opts.AccountKeeper, opts.SignModeHandler),
-		ante.NewIncrementSequenceDecorator(opts.AccountKeeper),
+		nonceante.NewSigVerificationDecorator(opts.AccountKeeper, opts.SignModeHandler, opts.NonceKeeper),
+		nonceante.NewIncrementSequenceDecorator(opts.AccountKeeper),
 		ibcante.NewRedundantRelayDecorator(opts.IBCkeeper),
 	}
 

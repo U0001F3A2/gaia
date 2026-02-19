@@ -94,6 +94,8 @@ import (
 	gaiaparams "github.com/cosmos/gaia/v26/app/params"
 	liquidkeeper "github.com/cosmos/gaia/v26/x/liquid/keeper"
 	liquidtypes "github.com/cosmos/gaia/v26/x/liquid/types"
+	noncekeeper "github.com/cosmos/gaia/v26/x/nonce/keeper"
+	noncetypes "github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
 type AppKeepers struct {
@@ -110,6 +112,7 @@ type AppKeepers struct {
 	MintKeeper         mintkeeper.Keeper
 	DistrKeeper        distrkeeper.Keeper
 	LiquidKeeper       *liquidkeeper.Keeper
+	NonceKeeper        *noncekeeper.Keeper
 	GovKeeper          *govkeeper.Keeper
 	UpgradeKeeper      *upgradekeeper.Keeper
 	ParamsKeeper       paramskeeper.Keeper //nolint:staticcheck
@@ -268,6 +271,12 @@ func NewAppKeeper(
 		appKeepers.BankKeeper,
 		appKeepers.StakingKeeper,
 		appKeepers.DistrKeeper,
+		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
+	)
+
+	appKeepers.NonceKeeper = noncekeeper.NewKeeper(
+		appCodec,
+		runtime.NewKVStoreService(appKeepers.keys[noncetypes.StoreKey]),
 		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
 	)
 

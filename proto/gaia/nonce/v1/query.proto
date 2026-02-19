@@ -1,0 +1,59 @@
+syntax = "proto3";
+package gaia.nonce.v1;
+
+option go_package = "github.com/cosmos/gaia/x/nonce/types";
+
+import "gogoproto/gogo.proto";
+import "cosmos_proto/cosmos.proto";
+import "google/api/annotations.proto";
+import "cosmos/query/v1/query.proto";
+import "cosmos/base/query/v1beta1/pagination.proto";
+import "amino/amino.proto";
+import "gaia/nonce/v1/nonce.proto";
+
+// Query defines the gRPC querier service for x/nonce.
+service Query {
+  // Params queries the module parameters.
+  rpc Params(QueryParamsRequest) returns (QueryParamsResponse) {
+    option (cosmos.query.v1.module_query_safe) = true;
+    option (google.api.http).get = "/gaia/nonce/v1/params";
+  }
+
+  // HasNonce checks whether a specific timestamp nonce has been consumed for an address.
+  rpc HasNonce(QueryHasNonceRequest) returns (QueryHasNonceResponse) {
+    option (cosmos.query.v1.module_query_safe) = true;
+    option (google.api.http).get = "/gaia/nonce/v1/has_nonce/{address}/{timestamp_us}";
+  }
+
+  // NoncesByAddress returns all active timestamp nonces for a given address.
+  rpc NoncesByAddress(QueryNoncesByAddressRequest) returns (QueryNoncesByAddressResponse) {
+    option (cosmos.query.v1.module_query_safe) = true;
+    option (google.api.http).get = "/gaia/nonce/v1/nonces/{address}";
+  }
+}
+
+message QueryParamsRequest {}
+
+message QueryParamsResponse {
+  Params params = 1
+      [ (gogoproto.nullable) = false, (amino.dont_omitempty) = true ];
+}
+
+message QueryHasNonceRequest {
+  string address = 1 [ (cosmos_proto.scalar) = "cosmos.AddressString" ];
+  uint64 timestamp_us = 2;
+}
+
+message QueryHasNonceResponse {
+  bool has_nonce = 1;
+}
+
+message QueryNoncesByAddressRequest {
+  string address = 1 [ (cosmos_proto.scalar) = "cosmos.AddressString" ];
+  cosmos.base.query.v1beta1.PageRequest pagination = 2;
+}
+
+message QueryNoncesByAddressResponse {
+  repeated uint64 timestamp_nonces = 1;
+  cosmos.base.query.v1beta1.PageResponse pagination = 2;
+}

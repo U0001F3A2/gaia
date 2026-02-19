@@ -32,6 +32,7 @@ import (
 	wasmtypes "github.com/CosmWasm/wasmd/x/wasm/types"
 
 	liquidtypes "github.com/cosmos/gaia/v26/x/liquid/types"
+	noncetypes "github.com/cosmos/gaia/v26/x/nonce/types"
 )
 
 func (appKeepers *AppKeepers) GenerateKeys() {
@@ -63,6 +64,7 @@ func (appKeepers *AppKeepers) GenerateKeys() {
 		ibcwasmtypes.StoreKey,
 		tokenfactorytypes.StoreKey,
 		liquidtypes.StoreKey,
+		noncetypes.StoreKey,
 	)
 
 	// Define transient store keys
