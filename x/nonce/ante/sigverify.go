@@ -85,6 +85,7 @@ func (svd SigVerificationDecorator) AnteHandle(ctx sdk.Context, tx sdk.Tx, simul
 		}
 	}
 
+	// for multisigner nonce caching
 	var nonceParams *types.Params
 	getNonceParams := func() (types.Params, error) {
 		if nonceParams != nil {

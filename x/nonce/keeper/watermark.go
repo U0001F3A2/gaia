@@ -13,11 +13,8 @@ import (
 func (k Keeper) GetPruneWatermark(ctx context.Context) (uint64, error) {
 	store := k.storeService.OpenKVStore(ctx)
 	bz, err := store.Get(types.PruneWatermarkKey)
-	if err != nil {
-		return 0, err
-	}
-	if bz == nil {
-		return 0, nil
+	if bz == nil || err != nil {
+		return 0, err // if err != nil, we care about the error, so we can do this
 	}
 	if len(bz) < 8 {
 		return 0, fmt.Errorf("corrupted prune watermark: expected 8 bytes, got %d", len(bz))
