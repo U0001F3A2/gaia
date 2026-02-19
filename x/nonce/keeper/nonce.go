@@ -48,6 +48,7 @@ func (k Keeper) ValidateAndConsumeTimestampNonce(ctx context.Context, addr []byt
 // 6. Consume: store nonce
 func (k Keeper) ValidateAndConsumeWithParams(ctx context.Context, addr []byte, nonceUs uint64, params types.Params) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	// assume positive blocktime
 	blockTimeUs := uint64(sdkCtx.BlockTime().UnixMicro())
 
 	// Lower bound: the monotonic prune watermark set by PreBlocker each block
